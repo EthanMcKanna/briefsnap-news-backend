@@ -222,13 +222,26 @@ class FirebaseStorage:
             return False
         
         try:
-            # Add topic to summary document
-            summary_ref = db.collection(FIRESTORE_COLLECTION).add({
+            # Add topic to summary document with brief summary and bullet points if available
+            summary_doc = {
                 'summary': summary_data.get('Summary', ''),
                 'topic': topic,
                 'timestamp': datetime.now(timezone.utc),
                 'created_at': firestore.SERVER_TIMESTAMP
-            })
+            }
+            
+            # Add brief summary and bullet points if available
+            if 'brief_summary' in summary_data:
+                summary_doc['brief_summary'] = summary_data.get('brief_summary', '')
+                summary_doc['brief_updated_at'] = datetime.now(timezone.utc)
+            
+            if 'bullet_points' in summary_data:
+                summary_doc['bullet_points'] = summary_data.get('bullet_points', [])
+            
+            # Add to Firestore
+            summary_ref = db.collection(FIRESTORE_COLLECTION).add(summary_doc)
+            
+            print(f"Summary uploaded with fields: {', '.join(summary_doc.keys())}")
 
             # Add topic to article data and send notifications
             for story in summary_data.get('Stories', []):
