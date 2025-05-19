@@ -35,6 +35,7 @@ The system has been refactored into a modular structure:
 4. Configure GitHub repository secrets:
    - `GEMINI_API_KEY`: Your Google Gemini API key
    - `EXA_API_KEY`: Your Exa API key
+   - `FIREBASE_CREDENTIALS`: The entire contents of your firebase-credentials.json file
 
 ## Running the News Aggregator
 
