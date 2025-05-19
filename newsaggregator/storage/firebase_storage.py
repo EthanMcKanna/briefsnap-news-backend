@@ -19,6 +19,9 @@ class FirebaseStorage:
     _db = None
     _initialized = False
     
+    # Constants for collection names
+    WEEKLY_SUMMARIES_COLLECTION = 'weekly_summaries'
+    
     @classmethod
     def initialize(cls):
         """Initialize Firebase Admin SDK.
@@ -309,3 +312,139 @@ class FirebaseStorage:
         except Exception as e:
             print(f"Failed to upload to Firestore: {e}")
             return False 
+    
+    @classmethod
+    def get_summaries_in_timeframe(cls, start_time, end_time):
+        """Retrieve summaries from Firestore within a specific timeframe.
+        
+        Args:
+            start_time: Start time for retrieval
+            end_time: End time for retrieval
+            
+        Returns:
+            Dictionary of summaries by topic
+        """
+        db = cls.get_db()
+        if not db:
+            print("Firestore client not initialized")
+            return {}
+            
+        try:
+            # Query summaries in the specified timeframe
+            summaries_by_topic = {}
+            
+            summary_refs = db.collection(FIRESTORE_COLLECTION)\
+                .where('timestamp', '>=', start_time)\
+                .where('timestamp', '<=', end_time)\
+                .stream()
+                
+            for summary_ref in summary_refs:
+                summary_data = summary_ref.to_dict()
+                topic = summary_data.get('topic', 'TOP_NEWS')
+                
+                # Initialize list for this topic if not exists
+                if topic not in summaries_by_topic:
+                    summaries_by_topic[topic] = []
+                    
+                # Get articles for this summary
+                articles = []
+                articles_refs = db.collection(FIRESTORE_ARTICLES_COLLECTION)\
+                    .where('summary_ref', '==', summary_ref.id)\
+                    .stream()
+                    
+                for article_ref in articles_refs:
+                    article_data = article_ref.to_dict()
+                    articles.append({
+                        'title': article_data.get('title', ''),
+                        'content': article_data.get('description', ''),
+                        'id': article_data.get('id', '')
+                    })
+                    
+                # Add articles to summary data
+                summary_data['Stories'] = articles
+                
+                # Add summary to list for this topic
+                summaries_by_topic[topic].append(summary_data)
+                
+            print(f"Retrieved {sum(len(summaries) for summaries in summaries_by_topic.values())} summaries across {len(summaries_by_topic)} topics")
+            
+            return summaries_by_topic
+            
+        except Exception as e:
+            print(f"Error retrieving summaries from Firestore: {e}")
+            return {}
+    
+    @classmethod
+    def upload_weekly_summary(cls, weekly_summary):
+        """Upload weekly summary to Firestore.
+        
+        Args:
+            weekly_summary: Weekly summary data
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        db = cls.get_db()
+        if not db:
+            print("Firestore client not initialized")
+            return False
+            
+        try:
+            # Add weekly summary to Firestore
+            db.collection(cls.WEEKLY_SUMMARIES_COLLECTION).add(weekly_summary)
+            
+            print(f"Successfully uploaded weekly summary for {weekly_summary.get('topic', 'unknown topic')}")
+            
+            # Send notification about the new weekly summary
+            notification_data = {
+                'type': 'weekly_summary',
+                'topic': weekly_summary.get('topic', '')
+            }
+            
+            # Send to specific topic channel
+            topic_name = f"weekly_{weekly_summary.get('topic', '').lower()}"
+            
+            cls.send_fcm_notification(
+                topic=topic_name,
+                title=f"Weekly {weekly_summary.get('topic', '')} Summary",
+                body="Your weekly news digest is now available",
+                data=notification_data
+            )
+            
+            return True
+            
+        except Exception as e:
+            print(f"Error uploading weekly summary to Firestore: {e}")
+            return False
+            
+    @classmethod
+    def get_latest_weekly_summary(cls, topic):
+        """Get the latest weekly summary for a topic.
+        
+        Args:
+            topic: Topic to get summary for
+            
+        Returns:
+            Latest weekly summary or None if not found
+        """
+        db = cls.get_db()
+        if not db:
+            print("Firestore client not initialized")
+            return None
+            
+        try:
+            # Query for the latest weekly summary for this topic
+            summaries = db.collection(cls.WEEKLY_SUMMARIES_COLLECTION)\
+                .where('topic', '==', topic)\
+                .order_by('created_at', direction=firestore.Query.DESCENDING)\
+                .limit(1)\
+                .stream()
+                
+            for summary in summaries:
+                return summary.to_dict()
+                
+            return None
+            
+        except Exception as e:
+            print(f"Error getting latest weekly summary: {e}")
+            return None 

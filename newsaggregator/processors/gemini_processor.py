@@ -18,6 +18,7 @@ class GeminiProcessor:
         self.configure_gemini()
         self.chat_session = None
         self.brief_chat_session = None
+        self.weekly_chat_session = None
         
     def configure_gemini(self):
         """Configure the Gemini API client."""
@@ -176,4 +177,107 @@ class GeminiProcessor:
             return json.loads(response.text)
         except Exception as e:
             print(f"[ERROR] Failed to generate brief summary: {e}")
+            return None
+    
+    @retry_with_backoff
+    def generate_weekly_summary(self, content_text, topic):
+        """Generate weekly summary for a specific topic.
+        
+        Args:
+            content_text: Text content of daily summaries from the week
+            topic: News topic
+            
+        Returns:
+            Dictionary containing weekly summary, key developments, and trending topics
+        """
+        if not content_text:
+            print(f"INFO: No content provided for weekly summary of {topic}")
+            return None
+            
+        print(f"INFO: Generating weekly summary for topic: {topic}")
+        
+        try:
+            # Setup weekly summary generation model
+            if not self.weekly_chat_session:
+                generation_config = {
+                    "temperature": 1.0,
+                    "top_p": 0.95,
+                    "top_k": 40,
+                    "max_output_tokens": 8192,
+                    "response_schema": content.Schema(
+                        type=content.Type.OBJECT,
+                        required=["weekly_summary", "key_developments", "trending_topics"],
+                        properties={
+                            "weekly_summary": content.Schema(
+                                type=content.Type.STRING,
+                                description="A comprehensive 1-paragraph summary of the week's events"
+                            ),
+                            "key_developments": content.Schema(
+                                type=content.Type.ARRAY,
+                                description="8-10 key developments from the week",
+                                items=content.Schema(
+                                    type=content.Type.OBJECT,
+                                    required=["title", "description"],
+                                    properties={
+                                        "title": content.Schema(
+                                            type=content.Type.STRING,
+                                            description="Short title for the development"
+                                        ),
+                                        "description": content.Schema(
+                                            type=content.Type.STRING,
+                                            description="1-2 sentence description of the development"
+                                        ),
+                                    },
+                                ),
+                            ),
+                            "trending_topics": content.Schema(
+                                type=content.Type.ARRAY,
+                                description="5 trending topics or themes from the week",
+                                items=content.Schema(
+                                    type=content.Type.STRING
+                                ),
+                            ),
+                        },
+                    ),
+                    "response_mime_type": "application/json",
+                }
+                
+                model = genai.GenerativeModel(
+                    model_name="gemini-2.0-flash",
+                    generation_config=generation_config,
+                    safety_settings=[
+                        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+                    ]
+                )
+                
+                self.weekly_chat_session = model.start_chat()
+            
+            # Prepare prompt
+            prompt = f"""Create a comprehensive weekly summary for the topic {topic} based on the 
+            daily summaries provided below. The summary will be used for a news application's weekly digest.
+
+            {content_text}
+
+            Format your response as a JSON object with these exact fields:
+            1. "weekly_summary": A comprehensive paragraph (at least 200 words) that captures the major developments, 
+               trends, and significant events of the week related to {topic}.
+            2. "key_developments": An array of 8-10 objects, each with "title" and "description" fields, 
+               representing the most important news stories or developments from the week.
+            3. "trending_topics": An array of 5 strings representing broader themes or trends observed across multiple stories.
+
+            Make sure to capture the most important developments of the week while maintaining journalistic integrity.
+            """
+            
+            print(f"INFO: Sending request to Gemini API for weekly summary of topic: {topic}")
+            response = self.weekly_chat_session.send_message(prompt)
+            print(f"INFO: Received response from Gemini API for weekly summary of topic: {topic}")
+            
+            # Parse the response
+            return json.loads(response.text)
+            
+        except Exception as e:
+            print(f"Error generating weekly summary: {e}")
             return None 
