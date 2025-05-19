@@ -1,0 +1,66 @@
+{% extends 'layout.html' %}
+
+{% block content %}
+<h1 class="mb-4">Articles</h1>
+
+<div class="row mb-4">
+    <div class="col-12">
+        <!-- Topic filter tabs -->
+        <ul class="nav nav-tabs">
+            <li class="nav-item">
+                <a class="nav-link {% if not active_topic %}active{% endif %}" href="{{ url_for('index') }}">
+                    All Topics
+                </a>
+            </li>
+            {% for topic in topics %}
+            <li class="nav-item">
+                <a class="nav-link {% if active_topic == topic %}active{% endif %}" 
+                   href="{{ url_for('index', topic=topic) }}">
+                    {{ topic }}
+                </a>
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+</div>
+
+{% if query %}
+<div class="alert alert-info">
+    Showing results for: "{{ query }}" {% if active_topic %}in {{ active_topic }}{% endif %}
+    <a href="{% if active_topic %}{{ url_for('index', topic=active_topic) }}{% else %}{{ url_for('index') }}{% endif %}" class="float-end">Clear search</a>
+</div>
+{% endif %}
+
+<div class="row row-cols-1 row-cols-md-3 g-4">
+    {% for article in articles %}
+    <div class="col">
+        <div class="card h-100 article-card">
+            {% if article.img_url %}
+            <img src="{{ article.img_url }}" class="card-img-top" alt="{{ article.title }}">
+            {% else %}
+            <div class="card-img-top bg-light d-flex justify-content-center align-items-center">
+                <span class="text-muted">No image</span>
+            </div>
+            {% endif %}
+            <div class="card-body">
+                <h5 class="card-title">{{ article.title }}</h5>
+                <p class="card-text">{{ article.description|truncate(100) }}</p>
+                <div class="d-flex justify-content-between align-items-center mt-auto">
+                    <span class="badge bg-secondary">{{ article.topic }}</span>
+                    <a href="/article/{{ article.doc_id }}" class="btn btn-primary btn-sm">Edit Article</a>
+                </div>
+            </div>
+            <div class="card-footer">
+                <small class="text-muted">Published: {{ article.timestamp.strftime('%Y-%m-%d %H:%M') if article.timestamp else 'Unknown' }}</small>
+            </div>
+        </div>
+    </div>
+    {% else %}
+    <div class="col-12">
+        <div class="alert alert-warning">
+            No articles found.
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% endblock %} 

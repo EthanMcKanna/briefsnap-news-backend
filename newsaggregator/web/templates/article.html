@@ -1,0 +1,193 @@
+{% extends 'layout.html' %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-8">
+        <h2>{{ article.title }}</h2>
+        <p class="text-muted">
+            Topic: {{ article.topic }} | 
+            Published: {{ article.timestamp.strftime('%Y-%m-%d %H:%M') if article.timestamp else 'Unknown' }}
+        </p>
+        
+        <!-- Image Section -->
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="card-title mb-0">Current Image</h5>
+                <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#imageCollapse">
+                    Edit
+                </button>
+            </div>
+            <div class="card-body">
+                {% if article.img_url %}
+                <img src="{{ article.img_url }}" class="image-preview" alt="{{ article.title }}">
+                <p class="card-text"><strong>Current URL:</strong> <a href="{{ article.img_url }}" target="_blank">{{ article.img_url }}</a></p>
+                {% else %}
+                <div class="alert alert-warning">No image available</div>
+                {% endif %}
+            </div>
+            <div class="collapse" id="imageCollapse">
+                <div class="card-footer">
+                    <form action="/update_image/{{ article.doc_id }}" method="post">
+                        <div class="mb-3">
+                            <label for="img_url" class="form-label">New Image URL</label>
+                            <input type="url" class="form-control" id="img_url" name="img_url" value="{{ article.img_url or '' }}" required>
+                            <div class="form-text">Enter the full URL of the new image</div>
+                        </div>
+                        <div class="mb-3">
+                            <label for="image_preview" class="form-label">Preview</label>
+                            <div id="image_preview" class="border p-2 bg-light text-center">
+                                <img id="preview_img" class="image-preview d-none" alt="Preview">
+                                <div id="preview_placeholder" class="p-5">Enter a URL and click Preview</div>
+                            </div>
+                        </div>
+                        <div class="d-flex justify-content-between">
+                            <button type="button" id="preview_button" class="btn btn-secondary">Preview Image</button>
+                            <button type="submit" class="btn btn-primary">Update Image</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Description Section -->
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="card-title mb-0">Description</h5>
+                <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#descriptionCollapse">
+                    Edit
+                </button>
+            </div>
+            <div class="card-body">
+                <p>{{ article.description }}</p>
+            </div>
+            <div class="collapse" id="descriptionCollapse">
+                <div class="card-footer">
+                    <form action="/update_description/{{ article.doc_id }}" method="post">
+                        <div class="mb-3">
+                            <label for="description" class="form-label">Edit Description</label>
+                            <textarea class="form-control" id="description" name="description" rows="4" required>{{ article.description }}</textarea>
+                        </div>
+                        <div class="d-flex justify-content-end">
+                            <button type="submit" class="btn btn-primary">Update Description</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Full Article Section -->
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="card-title mb-0">Full Article</h5>
+                <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#fullArticleCollapse">
+                    Edit
+                </button>
+            </div>
+            <div class="card-body">
+                {% if article.full_article %}
+                <div class="border p-3 bg-light">
+                    {{ article.full_article|safe }}
+                </div>
+                {% else %}
+                <div class="alert alert-warning">No full article content available</div>
+                {% endif %}
+            </div>
+            <div class="collapse" id="fullArticleCollapse">
+                <div class="card-footer">
+                    <form action="/update_full_article/{{ article.doc_id }}" method="post">
+                        <div class="mb-3">
+                            <label for="full_article" class="form-label">Edit Full Article</label>
+                            <textarea class="form-control" id="full_article" name="full_article" rows="10">{{ article.full_article }}</textarea>
+                        </div>
+                        <div class="d-flex justify-content-end">
+                            <button type="submit" class="btn btn-primary">Update Full Article</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-4">
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="card-title mb-0">Article Details</h5>
+            </div>
+            <div class="card-body">
+                <p><strong>Slug:</strong> {{ article.slug }}</p>
+                <p><strong>Source:</strong> {{ article.source or 'Not specified' }}</p>
+                {% if article.citations %}
+                <p><strong>Citations:</strong></p>
+                <ul>
+                    {% for citation in article.citations %}
+                    <li><a href="{{ citation }}" target="_blank">{{ citation }}</a></li>
+                    {% endfor %}
+                </ul>
+                {% endif %}
+            </div>
+        </div>
+        
+        <!-- Delete Article Card -->
+        <div class="card mb-4 border-danger">
+            <div class="card-header bg-danger text-white">
+                <h5 class="card-title mb-0">Danger Zone</h5>
+            </div>
+            <div class="card-body">
+                <p class="text-danger"><strong>Permanently Delete Article</strong></p>
+                <p>This action cannot be undone. This will permanently delete the article from the database.</p>
+                
+                <form action="/delete_article/{{ article.doc_id }}" method="post">
+                    <div class="mb-3">
+                        <label for="confirmation" class="form-label">Type DELETE to confirm</label>
+                        <input type="text" class="form-control" id="confirmation" name="confirmation" required>
+                    </div>
+                    <button type="submit" class="btn btn-danger w-100">Delete Article</button>
+                </form>
+            </div>
+        </div>
+        
+        <div class="d-grid gap-2">
+            <a href="/" class="btn btn-outline-secondary">Back to Articles</a>
+        </div>
+    </div>
+</div>
+
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const imgUrlInput = document.getElementById('img_url');
+        const previewButton = document.getElementById('preview_button');
+        const previewImg = document.getElementById('preview_img');
+        const previewPlaceholder = document.getElementById('preview_placeholder');
+        
+        // Function to preview image
+        function previewImage() {
+            const url = imgUrlInput.value.trim();
+            
+            if (url) {
+                previewImg.src = url;
+                previewImg.onload = function() {
+                    previewImg.classList.remove('d-none');
+                    previewPlaceholder.classList.add('d-none');
+                };
+                previewImg.onerror = function() {
+                    previewImg.classList.add('d-none');
+                    previewPlaceholder.classList.remove('d-none');
+                    previewPlaceholder.innerHTML = 'Unable to load image. Please check the URL.';
+                };
+            } else {
+                previewImg.classList.add('d-none');
+                previewPlaceholder.classList.remove('d-none');
+                previewPlaceholder.innerHTML = 'No URL provided';
+            }
+        }
+        
+        // Set up event listeners
+        previewButton.addEventListener('click', previewImage);
+        
+        // Initial preview if URL exists
+        if (imgUrlInput.value.trim()) {
+            previewImage();
+        }
+    });
+</script>
+{% endblock %} 
