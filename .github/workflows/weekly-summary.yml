@@ -34,6 +34,7 @@ jobs:
       - name: Run Weekly Summary Generator
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
         run: python weekly_summary.py
         
       - name: Upload data
