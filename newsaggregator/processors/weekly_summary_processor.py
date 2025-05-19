@@ -94,7 +94,7 @@ class WeeklySummaryProcessor:
         
         for summary in summaries:
             content.append(f"DATE: {summary.get('created_at', '')}")
-            content.append(f"SUMMARY: {summary.get('Summary', '')}")
+            content.append(f"SUMMARY: {summary.get('summary', summary.get('Summary', ''))}")
             
             if "Stories" in summary:
                 content.append("TOP STORIES:")
@@ -102,8 +102,21 @@ class WeeklySummaryProcessor:
                     content.append(f"{i}. {story.get('title', '')}: {story.get('content', '')}")
             
             content.append("\n---\n")
+        
+        result = "\n".join(content)
+        
+        # Debug logging - save the content being sent to a file
+        debug_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        debug_path = self.weekly_summaries_dir / f"debug_content_{debug_timestamp}.txt"
+        try:
+            with open(debug_path, 'w', encoding='utf-8') as f:
+                f.write(f"Number of summaries: {len(summaries)}\n\n")
+                f.write(result)
+            print(f"DEBUG: Saved content context to {debug_path}")
+        except Exception as e:
+            print(f"DEBUG: Failed to save debug content: {e}")
             
-        return "\n".join(content)
+        return result
     
     def save_summary_to_file(self, topic: str, summary: Dict):
         """Save the weekly summary to a file.

@@ -195,6 +195,7 @@ class GeminiProcessor:
             return None
             
         print(f"INFO: Generating weekly summary for topic: {topic}")
+        print(f"INFO: Content size for {topic}: {len(content_text)} characters")
         
         try:
             # Setup weekly summary generation model
@@ -242,6 +243,7 @@ class GeminiProcessor:
                     "response_mime_type": "application/json",
                 }
                 
+                print(f"INFO: Initializing weekly summary model for {topic}")
                 model = genai.GenerativeModel(
                     model_name="gemini-2.0-flash",
                     generation_config=generation_config,
@@ -254,6 +256,7 @@ class GeminiProcessor:
                 )
                 
                 self.weekly_chat_session = model.start_chat()
+                print(f"INFO: Weekly summary model initialized for {topic}")
             
             # Prepare prompt
             prompt = f"""Create a comprehensive weekly summary for the topic {topic} based on the 
@@ -273,11 +276,34 @@ class GeminiProcessor:
             
             print(f"INFO: Sending request to Gemini API for weekly summary of topic: {topic}")
             response = self.weekly_chat_session.send_message(prompt)
-            print(f"INFO: Received response from Gemini API for weekly summary of topic: {topic}")
+            print(f"INFO: Received response from Gemini API for topic: {topic}")
             
             # Parse the response
-            return json.loads(response.text)
+            try:
+                result = json.loads(response.text)
+                
+                # Validate response structure
+                if "weekly_summary" not in result:
+                    print(f"WARNING: Weekly summary response for {topic} missing 'weekly_summary' field")
+                    
+                if "key_developments" not in result:
+                    print(f"WARNING: Weekly summary response for {topic} missing 'key_developments' field")
+                    
+                if "trending_topics" not in result:
+                    print(f"WARNING: Weekly summary response for {topic} missing 'trending_topics' field")
+                
+                # Debug: Log the result structure
+                print(f"DEBUG: Weekly summary for {topic} has {len(result.get('key_developments', []))} key developments")
+                print(f"DEBUG: Weekly summary for {topic} has {len(result.get('trending_topics', []))} trending topics")
+                print(f"DEBUG: Weekly summary length: {len(result.get('weekly_summary', ''))}")
+                
+                return result
+                
+            except json.JSONDecodeError as json_err:
+                print(f"ERROR: Failed to parse weekly summary JSON for {topic}: {json_err}")
+                print(f"Raw response: {response.text[:200]}...")  # Log part of the raw response
+                return None
             
         except Exception as e:
-            print(f"Error generating weekly summary: {e}")
+            print(f"ERROR: Failed to generate weekly summary for {topic}: {str(e)}")
             return None 

@@ -330,6 +330,8 @@ class FirebaseStorage:
             return {}
             
         try:
+            print(f"DEBUG: Retrieving summaries from {start_time.isoformat()} to {end_time.isoformat()}")
+            
             # Query summaries in the specified timeframe
             summaries_by_topic = {}
             
@@ -337,8 +339,10 @@ class FirebaseStorage:
                 .where('timestamp', '>=', start_time)\
                 .where('timestamp', '<=', end_time)\
                 .stream()
-                
+            
+            summary_count = 0
             for summary_ref in summary_refs:
+                summary_count += 1
                 summary_data = summary_ref.to_dict()
                 topic = summary_data.get('topic', 'TOP_NEWS')
                 
@@ -351,22 +355,31 @@ class FirebaseStorage:
                 articles_refs = db.collection(FIRESTORE_ARTICLES_COLLECTION)\
                     .where('summary_ref', '==', summary_ref.id)\
                     .stream()
-                    
+                
+                article_count = 0
                 for article_ref in articles_refs:
+                    article_count += 1
                     article_data = article_ref.to_dict()
                     articles.append({
                         'title': article_data.get('title', ''),
                         'content': article_data.get('description', ''),
                         'id': article_data.get('id', '')
                     })
+                
+                print(f"DEBUG: Found {article_count} articles for summary dated {summary_data.get('created_at', 'unknown date')} for topic {topic}")
                     
                 # Add articles to summary data
                 summary_data['Stories'] = articles
                 
                 # Add summary to list for this topic
                 summaries_by_topic[topic].append(summary_data)
-                
-            print(f"Retrieved {sum(len(summaries) for summaries in summaries_by_topic.values())} summaries across {len(summaries_by_topic)} topics")
+            
+            print(f"DEBUG: Found a total of {summary_count} summaries from Firestore")
+            print(f"DEBUG: Retrieved {sum(len(summaries) for summaries in summaries_by_topic.values())} summaries across {len(summaries_by_topic)} topics")
+            
+            # Log topics and counts
+            for topic, summaries in summaries_by_topic.items():
+                print(f"DEBUG: Topic {topic}: {len(summaries)} summaries")
             
             return summaries_by_topic
             
