@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Data directories
+data/
+latest_news_articles/
+news_summaries/
+combined_articles/
+
+# Firebase credentials (contains sensitive keys)
+firebase-credentials.json
+
+# Runtime files
+*.log
+*.json
+last_summary_time.txt
+processed_articles.json
+failed_urls.json
+
+# Virtual environment
+.env
+.venv
+venv/
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

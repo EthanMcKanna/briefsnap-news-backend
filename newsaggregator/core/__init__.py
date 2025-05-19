@@ -1,0 +1,1 @@
+"""Core modules for the news aggregator system""" 

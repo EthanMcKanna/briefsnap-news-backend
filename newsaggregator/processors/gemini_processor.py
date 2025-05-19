@@ -1,0 +1,179 @@
+"""Gemini API processor for generating summaries and articles."""
+
+import json
+import google.generativeai as genai
+from google.ai.generativelanguage_v1beta.types import content
+
+from newsaggregator.utils.retry import retry_with_backoff
+from newsaggregator.config.settings import (
+    GEMINI_API_KEY, TOPIC_PROMPTS, DEFAULT_PROMPT,
+    BRIEF_GENERATION_CONFIG
+)
+
+class GeminiProcessor:
+    """Class for processing news data with Google's Gemini API."""
+    
+    def __init__(self):
+        """Initialize the Gemini API client."""
+        self.configure_gemini()
+        self.chat_session = None
+        self.brief_chat_session = None
+        
+    def configure_gemini(self):
+        """Configure the Gemini API client."""
+        genai.configure(api_key=GEMINI_API_KEY)
+    
+    def setup_gemini(self):
+        """Configure and return Gemini model for summaries.
+        
+        Returns:
+            Gemini chat session
+        """
+        if self.chat_session:
+            return self.chat_session
+            
+        generation_config = {
+            "temperature": 1.5,
+            "top_p": 0.95,
+            "top_k": 40,
+            "max_output_tokens": 8192,
+            "response_schema": content.Schema(
+                type=content.Type.OBJECT,
+                required=["Summary", "Stories"],
+                properties={
+                    "Stories": content.Schema(
+                        type=content.Type.ARRAY,
+                        items=content.Schema(
+                            type=content.Type.OBJECT,
+                            required=["StoryTitle", "StoryDescription"],
+                            properties={
+                                "StoryTitle": content.Schema(
+                                    type=content.Type.STRING,
+                                ),
+                                "StoryDescription": content.Schema(
+                                    type=content.Type.STRING,
+                                ),
+                            },
+                        ),
+                    ),
+                    "Summary": content.Schema(
+                        type=content.Type.STRING,
+                    ),
+                },
+            ),
+            "response_mime_type": "application/json",
+        }
+        
+        model = genai.GenerativeModel(
+            model_name="gemini-2.0-flash",
+            generation_config=generation_config,
+            safety_settings=[
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+            ]
+        )
+        
+        self.chat_session = model.start_chat()
+        return self.chat_session
+    
+    def setup_brief_gemini(self):
+        """Configure and return Gemini model for brief summaries.
+        
+        Returns:
+            Gemini chat session for brief summaries
+        """
+        if self.brief_chat_session:
+            return self.brief_chat_session
+            
+        model = genai.GenerativeModel(
+            model_name="gemini-2.0-flash-lite",
+            generation_config=BRIEF_GENERATION_CONFIG,
+            safety_settings=[
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+            ]
+        )
+        
+        self.brief_chat_session = model.start_chat()
+        return self.brief_chat_session
+    
+    @retry_with_backoff
+    def generate_summary(self, content_text, topic='TOP_NEWS'):
+        """Generate summary and top stories for a specific topic.
+        
+        Args:
+            content_text: Text content to summarize
+            topic: News topic
+            
+        Returns:
+            Dictionary containing Summary and Stories fields, or None if generation fails
+        """
+        if not content_text:
+            print(f"INFO: No content provided for topic {topic}")
+            return None
+            
+        print(f"INFO: Generating summary for topic: {topic}")
+        
+        try:
+            # Get topic-specific prompt or fall back to default
+            prompt_template = TOPIC_PROMPTS.get(topic, DEFAULT_PROMPT)
+            
+            # Escape any problematic characters in the content
+            content_escaped = json.dumps(content_text)
+            
+            prompt = f"""{prompt_template}
+
+            Format your response as a JSON object with these exact field names.
+
+            News Articles: 
+            {content_escaped}"""
+            
+            # Initialize chat session if needed
+            chat_session = self.setup_gemini()
+            
+            print(f"INFO: Sending request to Gemini API for topic: {topic}")
+            response = chat_session.send_message(prompt)
+            print(f"INFO: Received response from Gemini API for topic: {topic}")
+            
+            # Parse the response
+            return json.loads(response.text)
+            
+        except Exception as e:
+            print(f"Error generating summary: {e}")
+            return None
+    
+    @retry_with_backoff
+    def generate_brief_summary(self, summary_text, topic):
+        """Generate brief bullet-point summary.
+        
+        Args:
+            summary_text: Original summary to compress
+            topic: News topic
+            
+        Returns:
+            Dictionary containing BriefSummary and BulletPoints fields
+        """
+        prompt = f"""Create an extremely concise version of this news summary for topic: {topic}
+
+        Original Summary:
+        {summary_text}
+
+        Please provide:
+        1. A "BriefSummary" field with 1-2 sentences highlighting only the most crucial point
+        2. A "BulletPoints" array with 3-5 extremely short bullet points of key takeaways
+
+        Format as JSON with exactly these fields."""
+
+        try:
+            # Initialize brief chat session if needed
+            brief_chat = self.setup_brief_gemini()
+            
+            response = brief_chat.send_message(prompt)
+            return json.loads(response.text)
+        except Exception as e:
+            print(f"[ERROR] Failed to generate brief summary: {e}")
+            return None 

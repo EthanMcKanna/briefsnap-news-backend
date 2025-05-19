@@ -1,0 +1,1 @@
+"""Configuration package for the news aggregator system""" 
