@@ -408,21 +408,26 @@ class FirebaseStorage:
             
             print(f"Successfully uploaded weekly summary for {weekly_summary.get('topic', 'unknown topic')}")
             
-            # Send notification about the new weekly summary
-            notification_data = {
-                'type': 'weekly_summary',
-                'topic': weekly_summary.get('topic', '')
-            }
-            
-            # Send to specific topic channel
-            topic_name = f"weekly_{weekly_summary.get('topic', '').lower()}"
-            
-            cls.send_fcm_notification(
-                topic=topic_name,
-                title=f"Weekly {weekly_summary.get('topic', '')} Summary",
-                body="Your weekly news digest is now available",
-                data=notification_data
-            )
+            # Only send notification for TOP_NEWS category
+            if weekly_summary.get('topic', '') == 'TOP_NEWS':
+                notification_data = {
+                    'type': 'weekly_summary',
+                    'topic': 'TOP_NEWS',
+                    'title': "Your Weekly News Brief",
+                    'body': "Your weekly news summary is ready",
+                    'sound': "default",
+                    'badge': "0"
+                }
+                
+                # Send to specific topic channel
+                topic_name = "weekly_top_news"
+                
+                cls.send_fcm_notification(
+                    topic=topic_name,
+                    title="Your Weekly News Brief",
+                    body="Your weekly news summary is ready",
+                    data=notification_data
+                )
             
             return True
             
