@@ -27,8 +27,11 @@ jobs:
           pip install -r requirements.txt
       
       - name: Create Firebase credentials file
+        env:
+          FIREBASE_CREDENTIALS_JSON: ${{ secrets.FIREBASE_CREDENTIALS }}
         run: |
-          echo "${{ secrets.FIREBASE_CREDENTIALS }}" > firebase-credentials.json
+          # Write to file using a Python script to ensure proper formatting
+          python -c "import os, json; open('firebase-credentials.json', 'w').write(os.environ['FIREBASE_CREDENTIALS_JSON'])"
           
       - name: Run News Aggregator
         env:
