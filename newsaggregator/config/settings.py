@@ -19,6 +19,7 @@ RSS_FEEDS = {
     'WORLD': 'https://news.google.com/news/rss/headlines/section/topic/WORLD',
     'BUSINESS': 'https://news.google.com/news/rss/headlines/section/topic/BUSINESS',
     'TECHNOLOGY': 'https://news.google.com/news/rss/headlines/section/topic/TECHNOLOGY',
+    'SPORTS': 'https://news.google.com/news/rss/headlines/section/topic/SPORTS',
 }
 
 # Directory settings
@@ -65,6 +66,9 @@ GEMINI_MAX_DELAY = 32  # Maximum delay between retries in seconds
 EXA_API_KEY = os.environ.get("EXA_API_KEY", "")
 EXA_SEARCH_LIMIT = 5
 EXA_LOOKBACK_DAYS = 7
+
+# Sports API configuration
+SPORTS_API_KEY = "3"
 
 # Validate required environment variables
 missing_vars = []

@@ -3,7 +3,7 @@ import os
 from datetime import datetime, timezone
 
 from newsaggregator.storage.firebase_storage import FirebaseStorage
-from newsaggregator.config.settings import FIRESTORE_ARTICLES_COLLECTION, RSS_FEEDS
+from newsaggregator.config.settings import FIRESTORE_ARTICLES_COLLECTION, RSS_FEEDS, FIRESTORE_COLLECTION
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
@@ -37,8 +37,30 @@ def index():
         article_data = article.to_dict()
         article_data['doc_id'] = article.id
         articles_list.append(article_data)
-    
-    return render_template('index.html', articles=articles_list, topics=get_topics(), active_topic=topic_filter)
+
+    structured_sports_data_for_template = None
+    if topic_filter == 'SPORTS' and db: # Ensure db is available
+        try:
+            summary_query = db.collection(FIRESTORE_COLLECTION) \
+                                .where('topic', '==', 'SPORTS') \
+                                .order_by('timestamp', direction='DESCENDING') \
+                                .limit(1) \
+                                .stream()
+            
+            for summary_doc_snap in summary_query: # Should be at most one
+                summary_data = summary_doc_snap.to_dict()
+                if summary_data and 'structured_sports_data' in summary_data:
+                    structured_sports_data_for_template = summary_data['structured_sports_data']
+                break 
+        except Exception as e:
+            flash(f"Error fetching structured sports data: {e}", "error")
+            # Optionally log the error e.g. app.logger.error(f"...")
+
+    return render_template('index.html', 
+                           articles=articles_list, 
+                           topics=get_topics(), 
+                           active_topic=topic_filter, 
+                           structured_sports_data=structured_sports_data_for_template)
 
 def get_topics():
     """Get list of available topics from RSS feeds and add additional ones"""

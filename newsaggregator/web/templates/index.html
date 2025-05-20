@@ -31,6 +31,77 @@
 </div>
 {% endif %}
 
+{# Display structured sports data if topic is SPORTS and data exists #}
+{% if active_topic == 'SPORTS' and structured_sports_data and structured_sports_data.leagues %}
+<div class="sports-extra-data mb-4">
+    <h2 class="mb-3">Leagues and Schedules</h2>
+    <div class="accordion" id="sportsLeaguesAccordion">
+        {% for league in structured_sports_data.leagues %}
+        <div class="accordion-item">
+            <h2 class="accordion-header" id="heading-{{ league.id | replace(' ', '-') }}">
+                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" 
+                        data-bs-target="#collapse-{{ league.id | replace(' ', '-') }}" aria-expanded="false" 
+                        aria-controls="collapse-{{ league.id | replace(' ', '-') }}">
+                    {{ league.name }} ({{ league.sport }})
+                    {% if league.country %}<small class="text-muted ms-2">- {{ league.country }}</small>{% endif %}
+                </button>
+            </h2>
+            <div id="collapse-{{ league.id | replace(' ', '-') }}" class="accordion-collapse collapse" 
+                 aria-labelledby="heading-{{ league.id | replace(' ', '-') }}" data-bs-parent="#sportsLeaguesAccordion">
+                <div class="accordion-body">
+                    {% if league.games and league.games|length > 0 %}
+                    <ul class="list-group">
+                        {% for game in league.games %}
+                        <li class="list-group-item">
+                            <div class="d-flex w-100 justify-content-between">
+                                <h5 class="mb-1">
+                                    {% if game.home_team and game.away_team %}
+                                        {{ game.home_team }} vs {{ game.away_team }}
+                                    {% else %}
+                                        Event: {{ game.id }} {# Fallback if team names are missing #}
+                                    {% endif %}
+                                </h5>
+                                <small>{{ game.status | default('Scheduled') }}</small>
+                            </div>
+                            <p class="mb-1">
+                                <small>
+                                    <strong>Date:</strong> {{ game.date | default('N/A') }} 
+                                    {% if game.time %}<strong>Time:</strong> {{ game.time | replace('Z', '') | replace('T', ' ') }}{% endif %}
+                                    {% if game.round %}<strong>Round:</strong> {{ game.round }}{% endif %}
+                                </small>
+                            </p>
+                            {% if game.venue %}
+                                <p class="mb-1"><small><strong>Venue:</strong> {{ game.venue }}</small></p>
+                            {% endif %}
+                            {% if game.home_score is not none and game.away_score is not none and (game.home_score != 0 or game.away_score != 0 or game.status == 'Match Finished') %}
+                                <p class="mb-1"><small><strong>Score:</strong> {{ game.home_score }} - {{ game.away_score }}</small></p>
+                            {% endif %}
+                            {% if game.description %}
+                                <p class="mb-1 fst-italic"><small>{{ game.description }}</small></p>
+                            {% endif %}
+                             {% if game.spectators and game.spectators != "0" %}
+                                <p class="mb-1"><small><strong>Spectators:</strong> {{ game.spectators }}</small></p>
+                            {% endif %}
+                            {% if game.tv_station %}
+                                <p class="mb-0"><small><strong>TV:</strong> {{ game.tv_station }}</small></p>
+                            {% endif %}
+                        </li>
+                        {% endfor %}
+                    </ul>
+                    {% else %}
+                    <p class="text-muted">No upcoming games or event details found for this league currently.</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% elif active_topic == 'SPORTS' and structured_sports_data and not structured_sports_data.leagues %}
+<div class="alert alert-info">No specific league and schedule data available for Sports at the moment. Regular sports articles are shown below.</div>
+{% endif %}
+
+
 <div class="row row-cols-1 row-cols-md-3 g-4">
     {% for article in articles %}
     <div class="col">

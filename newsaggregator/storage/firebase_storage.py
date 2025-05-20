@@ -241,6 +241,10 @@ class FirebaseStorage:
             if 'bullet_points' in summary_data:
                 summary_doc['bullet_points'] = summary_data.get('bullet_points', [])
             
+            # Add structured sports data if it exists (especially for SPORTS topic)
+            if 'structured_sports_data' in summary_data:
+                summary_doc['structured_sports_data'] = summary_data['structured_sports_data']
+            
             # Add to Firestore
             summary_ref = db.collection(FIRESTORE_COLLECTION).add(summary_doc)
             
