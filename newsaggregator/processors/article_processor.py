@@ -124,9 +124,18 @@ class ArticleProcessor:
                 
             # Only fetch detailed article for unique stories
             if story_title:
-                detailed_article, citations, img_url = self.exa_fetcher.fetch_detailed_article(story_title)
+                detailed_article, citations, img_url, summary, key_points = self.exa_fetcher.fetch_detailed_article(story_title)
                 story['FullArticle'] = detailed_article
                 story['Citations'] = citations
+                
+                # Add summary and key points
+                if summary:
+                    story['summary'] = summary
+                    print(f"[INFO] Generated summary for: {story_title}")
+                
+                if key_points:
+                    story['keyPoints'] = key_points
+                    print(f"[INFO] Generated {len(key_points)} key points for: {story_title}")
                 
                 # Add image URL
                 if img_url:

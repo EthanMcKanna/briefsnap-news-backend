@@ -288,6 +288,15 @@ class FirebaseStorage:
                     'created_at': firestore.SERVER_TIMESTAMP
                 }
                 
+                # Add summary and key points if available
+                if 'summary' in story:
+                    article_data['summary'] = story.get('summary', '')
+                    article_data['summaryGeneratedAt'] = firestore.SERVER_TIMESTAMP
+                    
+                if 'keyPoints' in story:
+                    article_data['keyPoints'] = story.get('keyPoints', [])
+                    article_data['keyPointsGeneratedAt'] = firestore.SERVER_TIMESTAMP
+                
                 # Add article to Firestore
                 db.collection(FIRESTORE_ARTICLES_COLLECTION).add(article_data)
                 print(f"Added new article with slug: {slug}")
