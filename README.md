@@ -4,6 +4,7 @@ A modular and efficient system for aggregating, processing, and summarizing news
 
 ## Features
 
+### News Aggregation
 - Fetches news from multiple RSS feeds by topic
 - Extracts content using newspaper3k
 - Generates summaries using Google's Gemini AI
@@ -12,6 +13,16 @@ A modular and efficient system for aggregating, processing, and summarizing news
 - Enriches articles with additional content from Exa API
 - Sends notifications via Firebase Cloud Messaging
 - Automated processing via GitHub Actions twice daily (7am and 5pm Central Time)
+
+### Sports Data Aggregation
+- Fetches upcoming games for major sports (NFL, NBA, MLB, NHL, College Football, College Basketball, MLS)
+- Uses ESPN's free public API - no paid subscriptions required
+- Stores comprehensive game data in Firebase Firestore
+- Includes team info, schedules, venues, broadcasts, and odds
+- **Automated updates every 30 minutes** for live score tracking
+- Smart update detection prevents duplicates and tracks changes
+- Live game identification and recently updated game tracking
+- Automatic data cleanup and statistics tracking
 
 ## Architecture
 
@@ -37,20 +48,31 @@ The system has been refactored into a modular structure:
    - `EXA_API_KEY`: Your Exa API key
    - `FIREBASE_CREDENTIALS`: The entire contents of your firebase-credentials.json file
 
-## Running the News Aggregator
+## Running the System
 
-### Locally
-Run the news aggregator manually:
-```
+### News Aggregator
+
+#### Locally
+```bash
 python main.py
 ```
 
-### GitHub Actions
-The system automatically runs twice daily via GitHub Actions:
+#### GitHub Actions
+The news aggregator automatically runs twice daily:
 - 7:00 AM Central Time (13:00 UTC)
 - 5:00 PM Central Time (23:00 UTC)
 
-You can also trigger a manual run through the GitHub Actions interface by selecting the "News Aggregator Processing" workflow and clicking "Run workflow".
+### Sports Aggregator
+
+#### Locally
+```bash
+python main_sports.py
+```
+
+#### GitHub Actions
+The sports aggregator runs automatically every 30 minutes for live updates and score tracking.
+
+Both systems can also be triggered manually through the GitHub Actions interface.
 
 ## Configuration
 
@@ -64,14 +86,19 @@ All configuration is stored in `newsaggregator/config/settings.py`. You can modi
 
 ## Data Storage
 
-The system stores data in the following locations:
-
+### News Data
 - `data/latest_news_articles`: Individual article files
 - `data/combined_articles`: Combined articles by topic and date
 - `data/news_summaries`: Generated news summaries
 - Firestore collections: `news_summaries` and `articles`
 
-When running via GitHub Actions, the data directory is uploaded as an artifact at the end of each successful run.
+### Sports Data
+- `data/sports_data`: Sports game data and summaries
+- Firestore collections: `sports_games` and `sports_summaries`
+
+When running via GitHub Actions, the data directories are uploaded as artifacts at the end of each successful run.
+
+For detailed sports system documentation, see [SPORTS_README.md](SPORTS_README.md).
 
 ## Dependencies
 

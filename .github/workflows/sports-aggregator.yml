@@ -1,0 +1,43 @@
+name: Sports Aggregator Processing
+
+on:
+  schedule:
+    # Run every 30 minutes for live updates
+    - cron: '*/30 * * * *'
+  workflow_dispatch:  # Allow manual triggering
+
+jobs:
+  run-sports-aggregator:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+          
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Create Firebase credentials file
+        env:
+          FIREBASE_CREDENTIALS_JSON: ${{ secrets.FIREBASE_CREDENTIALS }}
+        run: |
+          # Write to file using a Python script to ensure proper formatting
+          python -c "import os, json; open('firebase-credentials.json', 'w').write(os.environ['FIREBASE_CREDENTIALS_JSON'])"
+          
+      - name: Run Sports Aggregator
+        run: python main_sports.py
+        
+      - name: Upload sports data
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sports-data-${{ github.run_number }}
+          path: data/sports_data/
+          retention-days: 7 
