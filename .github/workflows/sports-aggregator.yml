@@ -32,6 +32,9 @@ jobs:
           python -c "import os, json; open('firebase-credentials.json', 'w').write(os.environ['FIREBASE_CREDENTIALS_JSON'])"
           
       - name: Run Sports Aggregator
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
         run: python main_sports.py
         
       - name: Upload sports data
