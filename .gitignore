@@ -48,6 +48,7 @@ venv/
 .vscode/
 *.swp
 *.swo
+.github/workflows/briefsnap-news-backend.code-workspace
 
 # OS specific files
 .DS_Store
