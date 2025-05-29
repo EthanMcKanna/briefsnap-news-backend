@@ -170,7 +170,7 @@ class ExaFetcher:
                 
                 print(f"[INFO] Generating article with Gemini for: {story_title}")
                 response = model.generate_content(prompt)
-                article_text = response.text if response and hasattr(response, 'text') else ''
+                article_text = response.text.strip() if response and hasattr(response, 'text') else ''
                 if not article_text or not article_text.strip():
                     print(f"[WARNING] Skipping generated article with empty text for: {story_title}")
                     return '', [], best_image_url, '', []
@@ -209,7 +209,7 @@ class ExaFetcher:
             
             print(f"[INFO] Generating article with Gemini for: {story_title}")
             response = model.generate_content(prompt)
-            article_text = response.text
+            article_text = response.text.strip()
             
             # Generate summary and key points for the article
             summary = self._generate_summary(article_text)
