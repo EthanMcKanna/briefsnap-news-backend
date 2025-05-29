@@ -2,8 +2,8 @@ name: Sports Aggregator Processing
 
 on:
   schedule:
-    # Run every 30 minutes for live updates
-    - cron: '*/30 * * * *'
+    # Run every hour for regular updates
+    - cron: '0 * * * *'
   workflow_dispatch:  # Allow manual triggering
 
 jobs:

@@ -24,8 +24,8 @@ def main():
         sports_fetcher = SportsFetcher()
         
         # For frequent updates, focus on games today and tomorrow for better performance
-        print("Fetching sports games for next 2 days...")
-        all_games = sports_fetcher.fetch_all_sports(days_ahead=2)
+        print("Fetching sports games for next 7 days...")
+        all_games = sports_fetcher.fetch_all_sports(days_ahead=7)
         
         # Generate summary
         summary = sports_fetcher.get_games_summary(all_games)
