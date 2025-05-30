@@ -7,7 +7,8 @@ A reliable sports data aggregation system that fetches upcoming games for popula
 - Fetches upcoming games for major sports: NFL, NBA, MLB, NHL, College Football, College Basketball, and MLS
 - Uses ESPN's free public API for reliable data
 - Stores game data in Firebase Firestore for easy access
-- **Runs automatically every 30 minutes** for live score updates
+- **Runs automatically every hour** for live score updates
+- **Sports news summaries generated 4 times daily** (6 AM, 12 PM, 6 PM, Midnight Central Time) using Gemini 2.5 Flash with Google Search
 - **Smart update detection** - only updates games when scores, status, or other data changes
 - **Live game tracking** - identifies and prioritizes in-progress games
 - Includes comprehensive game information: teams, venues, schedules, broadcasts, and odds
@@ -48,9 +49,10 @@ Daily summaries with statistics and overview data
 ## Automated Schedule
 
 The sports aggregator runs automatically via GitHub Actions:
-- **Every 30 minutes** - Frequent updates for live games and score changes
-- Optimized to focus on games happening today and tomorrow
-- Smart update detection prevents duplicate entries
+- **Every hour during active times** (12 PM - 7 AM UTC) - Frequent updates for live games and score changes
+- **Sports news summaries** generated 4 times daily at 6 AM, 12 PM, 6 PM, and Midnight Central Time
+- Optimized to focus on games happening in the next 7 days
+- Smart update detection prevents duplicate entries and unnecessary API calls
 
 ## Manual Execution
 

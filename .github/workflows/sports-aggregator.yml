@@ -2,8 +2,9 @@ name: Sports Aggregator Processing
 
 on:
   schedule:
-    # Run every hour for regular updates
-    - cron: '0 * * * *'
+    # Run every hour from 12 PM UTC to 7 AM UTC (covers US sports times)
+    # This avoids running overnight when there are typically no games
+    - cron: '0 12-23,0-7 * * *'
   workflow_dispatch:  # Allow manual triggering
 
 jobs:

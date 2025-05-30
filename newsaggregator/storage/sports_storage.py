@@ -11,6 +11,7 @@ class SportsStorage:
     # Collection names
     SPORTS_GAMES_COLLECTION = 'sports_games'
     SPORTS_SUMMARIES_COLLECTION = 'sports_summaries'
+    SPORTS_NEWS_SUMMARIES_COLLECTION = 'sports_news_summaries'
     
     @classmethod
     def store_games(cls, all_games: Dict[str, List[Dict]], summary: Dict) -> bool:
@@ -524,4 +525,134 @@ class SportsStorage:
             
         except Exception as e:
             print(f"Error getting sports stats: {e}")
-            return {} 
+            return {}
+    
+    @classmethod
+    def store_news_summaries(cls, news_summaries: Dict[str, Dict]) -> bool:
+        """Store sports news summaries in Firestore.
+        
+        Args:
+            news_summaries: Dictionary of news summaries by sport code
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        db = FirebaseStorage.get_db()
+        if not db:
+            print("No Firestore connection available")
+            return False
+        
+        try:
+            timestamp = datetime.now(timezone.utc)
+            
+            for sport_code, summary_data in news_summaries.items():
+                # Create document with timestamp and sport
+                doc_id = f"{sport_code}_{timestamp.strftime('%Y%m%d_%H%M%S')}"
+                doc_ref = db.collection(cls.SPORTS_NEWS_SUMMARIES_COLLECTION).document(doc_id)
+                
+                # Add metadata
+                summary_data.update({
+                    'doc_id': doc_id,
+                    'timestamp': timestamp,
+                })
+                
+                doc_ref.set(summary_data)
+            
+            print(f"Successfully stored {len(news_summaries)} sports news summaries")
+            
+            # Clean up old news summaries (older than 7 days)
+            cls._cleanup_old_news_summaries()
+            
+            return True
+            
+        except Exception as e:
+            print(f"Error storing sports news summaries: {e}")
+            return False
+    
+    @classmethod
+    def get_latest_news_summaries(cls) -> Dict[str, Dict]:
+        """Get the latest news summaries for all sports.
+        
+        Returns:
+            Dictionary of latest news summaries by sport code
+        """
+        db = FirebaseStorage.get_db()
+        if not db:
+            print("No Firestore connection available")
+            return {}
+        
+        try:
+            summaries = {}
+            
+            # Get latest summary for each sport
+            for sport_code in ['nfl', 'nba', 'mlb', 'nhl', 'ncaaf', 'ncaab', 'mls']:
+                query = db.collection(cls.SPORTS_NEWS_SUMMARIES_COLLECTION)\
+                    .where('sport_code', '==', sport_code)\
+                    .order_by('timestamp', direction=firestore.Query.DESCENDING)\
+                    .limit(1)
+                
+                docs = list(query.stream())
+                if docs:
+                    summaries[sport_code] = docs[0].to_dict()
+            
+            return summaries
+            
+        except Exception as e:
+            print(f"Error fetching latest news summaries: {e}")
+            return {}
+    
+    @classmethod
+    def get_news_summary_by_sport(cls, sport_code: str, limit: int = 5) -> List[Dict]:
+        """Get recent news summaries for a specific sport.
+        
+        Args:
+            sport_code: Sport code to fetch summaries for
+            limit: Maximum number of summaries to return
+            
+        Returns:
+            List of news summaries for the sport
+        """
+        db = FirebaseStorage.get_db()
+        if not db:
+            print("No Firestore connection available")
+            return []
+        
+        try:
+            query = db.collection(cls.SPORTS_NEWS_SUMMARIES_COLLECTION)\
+                .where('sport_code', '==', sport_code)\
+                .order_by('timestamp', direction=firestore.Query.DESCENDING)\
+                .limit(limit)
+            
+            summaries = []
+            for doc in query.stream():
+                summaries.append(doc.to_dict())
+            
+            return summaries
+            
+        except Exception as e:
+            print(f"Error fetching news summaries for {sport_code}: {e}")
+            return []
+    
+    @classmethod
+    def _cleanup_old_news_summaries(cls):
+        """Clean up news summaries older than 7 days."""
+        db = FirebaseStorage.get_db()
+        if not db:
+            return
+        
+        try:
+            cutoff_date = datetime.now(timezone.utc) - timedelta(days=7)
+            
+            query = db.collection(cls.SPORTS_NEWS_SUMMARIES_COLLECTION)\
+                .where('timestamp', '<', cutoff_date)
+            
+            docs = list(query.stream())
+            
+            for doc in docs:
+                doc.reference.delete()
+            
+            if docs:
+                print(f"Cleaned up {len(docs)} old news summaries")
+                
+        except Exception as e:
+            print(f"Error cleaning up old news summaries: {e}") 
