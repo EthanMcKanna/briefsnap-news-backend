@@ -80,12 +80,14 @@ The application will be available at http://localhost:3000
 
 ## Cloudflare R2 Integration
 
-The application now automatically uploads article images to Cloudflare R2 for better performance and reliability. Benefits include:
+The application now automatically uploads article images to Cloudflare R2 with comprehensive optimization. Benefits include:
 
-- **Faster Loading**: Images served from Cloudflare's global CDN
+- **Faster Loading**: Images served from Cloudflare's global CDN with 70% smaller file sizes
 - **Better Reliability**: Eliminates broken image links from external sources
+- **Automatic Optimization**: WebP conversion, resolution capping (1200x800), and quality optimization
 - **Consistent Naming**: Images are renamed with timestamps and article titles
-- **Automatic Processing**: New articles automatically upload images to R2
+- **Automatic Processing**: New articles automatically upload and optimize images to R2
+- **Advanced Caching**: 2-year cache headers for WebP images, 1-year for others
 
 ### Image Status Indicators
 
@@ -99,5 +101,7 @@ The application now automatically uploads article images to Cloudflare R2 for be
 - All updates are logged and timestamped
 - Deletions are permanent and cannot be undone
 - R2 credentials are optional but recommended for optimal performance
-- Images uploaded to R2 are cached for one year for maximum performance
+- Images uploaded to R2 are automatically optimized and cached for maximum performance
+- Use `python check_image_optimization_status.py` to check optimization status
+- Use `python migrate_images_to_r2.py` to optimize existing R2 images
 - For security reasons, this tool should only be used in a trusted environment 

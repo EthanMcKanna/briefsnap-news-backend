@@ -152,7 +152,7 @@ class ArticleProcessor:
                             story['img_url'] = img_url
                     except Exception as e:
                         print(f"[ERROR] Error uploading image to R2: {e}, using original URL: {img_url}")
-                        story['img_url'] = img_url
+                    story['img_url'] = img_url
                 
                 unique_stories.append(story)
 

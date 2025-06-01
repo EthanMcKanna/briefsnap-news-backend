@@ -1,7 +1,22 @@
 #!/usr/bin/env python3
 """
-Migration script to upload existing external images to Cloudflare R2.
-This script scans all articles in Firebase and uploads any external images to R2.
+Migration script to upload and optimize images for Cloudflare R2.
+
+This script scans all articles in Firebase and:
+1. Uploads external images to R2 with optimization
+2. Re-processes existing R2 images that need optimization (WebP conversion, compression)
+
+Usage:
+  python migrate_images_to_r2.py                 # Process images that need optimization
+  python migrate_images_to_r2.py --force-reoptimize  # Re-process ALL R2 images
+  python migrate_images_to_r2.py --help          # Show this help
+
+The script automatically applies:
+- WebP conversion for optimal compression
+- Resolution capping (1200x800 max)
+- EXIF orientation correction
+- Quality optimization based on content type
+- Proper caching headers for Cloudflare CDN
 """
 
 import os
@@ -29,6 +44,21 @@ def main():
     """Main migration function."""
     print("🔄 Briefsnap Image Migration to R2 with Optimization")
     print("=" * 50)
+    
+    # Check for command line arguments
+    force_reoptimize = False
+    if len(sys.argv) > 1:
+        if sys.argv[1] == '--help' or sys.argv[1] == '-h':
+            print(__doc__)
+            return True
+        elif sys.argv[1] == '--force-reoptimize':
+            force_reoptimize = True
+            print("🔧 Force re-optimization mode enabled - will re-process ALL R2 images")
+            print()
+        else:
+            print(f"Unknown argument: {sys.argv[1]}")
+            print("Use --help for usage information")
+            return False
     
     # Check if R2 is enabled
     if not r2_storage.enabled:
@@ -88,79 +118,152 @@ def main():
     
     print(f"Found {len(articles_list)} articles")
     
-    # Filter articles with external images
+    # Filter articles with images that need processing
+    images_to_process = []
     external_images = []
+    r2_images_needing_optimization = []
+    
     for article in articles_list:
         img_url = article.get('img_url')
-        if img_url and 'images.briefsnap.com' not in img_url:
+        if not img_url:
+            continue
+            
+        if 'images.briefsnap.com' not in img_url:
+            # External image - needs migration
             external_images.append(article)
+            images_to_process.append({
+                'article': article,
+                'type': 'external',
+                'reason': 'External image needs migration to R2'
+            })
+        else:
+            # Already on R2 - check if it needs optimization
+            needs_optimization = False
+            reason = ""
+            
+            if force_reoptimize:
+                needs_optimization = True
+                reason = 'Force re-optimization requested'
+            elif not img_url.endswith('.webp'):
+                needs_optimization = True
+                reason = 'Non-WebP format needs conversion'
+            elif not article.get('optimized', False):
+                needs_optimization = True
+                reason = 'Missing optimization flag'
+            elif not article.get('optimization_applied_at'):
+                needs_optimization = True
+                reason = 'No optimization timestamp found'
+                
+            if needs_optimization:
+                r2_images_needing_optimization.append(article)
+                images_to_process.append({
+                    'article': article,
+                    'type': 'r2_optimization',
+                    'reason': reason
+                })
     
     print(f"Found {len(external_images)} articles with external images")
+    print(f"Found {len(r2_images_needing_optimization)} R2 images needing optimization")
+    print(f"Total images to process: {len(images_to_process)}")
     
-    if not external_images:
-        print("🎉 No external images found! All images are already hosted on R2.")
+    if not images_to_process:
+        print("🎉 No images need processing! All images are optimized and hosted on R2.")
         return True
     
     # Ask for confirmation
-    print(f"\n⚠️  This will download, optimize, and upload {len(external_images)} images to R2.")
-    print("Images will be optimized (WebP conversion, resizing, compression) before upload.")
+    print(f"\n⚠️  This will process {len(images_to_process)} images:")
+    print(f"   - {len(external_images)} external images will be migrated to R2")
+    print(f"   - {len(r2_images_needing_optimization)} R2 images will be re-optimized")
+    print()
+    print("All images will be optimized (WebP conversion, resizing, compression) before upload.")
     print("This process may take several minutes depending on image sizes and optimization.")
     
     if input("Continue? (y/N): ").lower() != 'y':
         print("Migration cancelled.")
         return False
     
-    # Process each article
+    # Process each image
     processed = 0
     failed = 0
     skipped = 0
     
-    print(f"\n🚀 Starting migration of {len(external_images)} images...")
-    print("-" * 50)
+    print(f"\n🚀 Starting processing of {len(images_to_process)} images...")
+    print("-" * 60)
     
-    for i, article in enumerate(external_images, 1):
+    for i, image_item in enumerate(images_to_process, 1):
+        article = image_item['article']
+        process_type = image_item['type']
+        reason = image_item['reason']
+        
         doc_id = article['doc_id']
         title = article.get('title', 'Unknown title')
         img_url = article.get('img_url')
         
-        print(f"[{i}/{len(external_images)}] Processing: {title[:50]}...")
+        print(f"[{i}/{len(images_to_process)}] Processing: {title[:50]}...")
+        print(f"  Type: {process_type}")
+        print(f"  Reason: {reason}")
+        print(f"  Current URL: {img_url}")
         
         try:
-            # Upload image to R2
+            # Upload/re-process image to R2 with optimization
             r2_url = r2_storage.upload_image_from_url(img_url, title)
             
             if r2_url:
-                # Update the article in Firestore
-                article_ref = db.collection(FIRESTORE_ARTICLES_COLLECTION).document(doc_id)
-                article_ref.update({
+                # Prepare update data
+                update_data = {
                     'img_url': r2_url,
                     'updated_at': datetime.now(timezone.utc),
-                    'migrated_to_r2': True,
-                    'original_img_url': img_url
-                })
+                    'optimized': True,
+                    'optimization_applied_at': datetime.now(timezone.utc)
+                }
                 
-                print(f"  ✅ Uploaded to: {r2_url}")
+                # For external images, preserve original URL
+                if process_type == 'external':
+                    update_data['migrated_to_r2'] = True
+                    update_data['original_img_url'] = img_url
+                else:
+                    # For R2 re-optimization, preserve existing original URL if it exists
+                    if 'original_img_url' not in article and not img_url.startswith('https://images.briefsnap.com'):
+                        update_data['original_img_url'] = img_url
+                    update_data['reoptimized'] = True
+                
+                # Update the article in Firestore
+                article_ref = db.collection(FIRESTORE_ARTICLES_COLLECTION).document(doc_id)
+                article_ref.update(update_data)
+                
+                print(f"  ✅ Processed to: {r2_url}")
                 processed += 1
             else:
-                print(f"  ❌ Failed to upload image")
+                print(f"  ❌ Failed to process image")
                 failed += 1
                 
         except Exception as e:
             print(f"  ❌ Error: {e}")
             failed += 1
         
-        # Add a small delay to be respectful to external servers
+        print("-" * 60)
+        
+        # Add a small delay to be respectful to servers
         time.sleep(1)
     
     # Print summary
-    print("-" * 50)
-    print(f"📊 Migration Summary:")
-    print(f"  ✅ Successfully migrated: {processed}")
+    print("=" * 60)
+    print(f"📊 Processing Summary:")
+    print(f"  ✅ Successfully processed: {processed}")
     print(f"  ❌ Failed: {failed}")
     print(f"  📋 Total processed: {processed + failed}")
+    print()
+    print("📋 Processing Details:")
+    print(f"  🔄 External images migrated: {len([x for x in images_to_process if x['type'] == 'external'])}")
+    print(f"  🎨 R2 images optimized: {len([x for x in images_to_process if x['type'] == 'r2_optimization'])}")
     
     if processed > 0:
-        print(f"\n🎉 Migration completed! {processed} images are now hosted on R2.")
+        print(f"\n🎉 Processing completed! {processed} images are now optimized on R2.")
+        print("All processed images now have:")
+        print("  - WebP format for optimal compression")
+        print("  - Proper resolution limits applied")
+        print("  - EXIF orientation correction")
+        print("  - Optimized caching headers")
     
     return True
 

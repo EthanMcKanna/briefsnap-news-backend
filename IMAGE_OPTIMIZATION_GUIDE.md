@@ -88,8 +88,28 @@ The article manager automatically uses optimization:
 Run the migration script to optimize existing images:
 
 ```bash
+# Process images that need optimization (smart mode)
 python migrate_images_to_r2.py
+
+# Force re-optimization of ALL R2 images
+python migrate_images_to_r2.py --force-reoptimize
+
+# Show help and usage information
+python migrate_images_to_r2.py --help
 ```
+
+### Status Checking
+Check current optimization status:
+
+```bash
+python check_image_optimization_status.py
+```
+
+This shows:
+- How many images are optimized vs non-optimized
+- WebP conversion status
+- Breakdown by image categories
+- Specific recommendations for your database
 
 ## Testing
 
