@@ -1,6 +1,6 @@
 # Briefsnap Article Manager
 
-A web interface to manage articles in the Briefsnap News database, including editing content and images.
+A web interface to manage articles in the Briefsnap News database, including editing content and images with Cloudflare R2 integration.
 
 ## Features
 
@@ -8,10 +8,12 @@ A web interface to manage articles in the Briefsnap News database, including edi
 - Filter articles by topic category (TOP_NEWS, BUSINESS, TECHNOLOGY, etc.)
 - Search for articles by title within all topics or a specific topic
 - View and edit article details:
-  - Update article images with URL preview
+  - Update article images with URL preview and automatic R2 upload
+  - Upload existing images to Cloudflare R2 for better performance
   - Edit article descriptions
   - Edit full article text
 - Delete articles from the database
+- Cloudflare R2 integration for optimized image hosting
 - Simple and intuitive user interface
 
 ## Setup
@@ -23,6 +25,17 @@ pip install -r requirements.txt
 ```
 
 2. Make sure your Firebase credentials file (`firebase-credentials.json`) is in the correct location as specified in your configuration.
+
+3. **Configure Cloudflare R2 (Optional but Recommended)**:
+   
+   Set the following environment variables for R2 integration:
+   ```bash
+   export R2_ACCOUNT_ID="your-r2-account-id"
+   export R2_ACCESS_KEY_ID="your-r2-access-key"
+   export R2_SECRET_ACCESS_KEY="your-r2-secret-key"
+   ```
+   
+   If these are not set, the application will still work but images will use their original URLs instead of being uploaded to R2.
 
 ## Running the Application
 
@@ -51,8 +64,10 @@ The application will be available at http://localhost:3000
 5. **On the Article Detail Page**:
    - **Edit Image**: Click the "Edit" button next to "Current Image" to expand the image editing form
       - Enter a new image URL
+      - Check "Upload image to Cloudflare R2" (recommended) to automatically upload the image to R2
       - Click "Preview Image" to verify the image loads correctly
       - Click "Update Image" to save the changes
+   - **Upload Current Image to R2**: If an image is using an external URL, click the "Upload to R2" button next to the edit button to migrate it to R2 hosting
    - **Edit Description**: Click the "Edit" button next to "Description" to expand the description editing form
       - Modify the text as needed
       - Click "Update Description" to save the changes
@@ -63,9 +78,26 @@ The application will be available at http://localhost:3000
       - Type "DELETE" (all caps) in the confirmation field
       - Click "Delete Article" to permanently remove the article from the database
 
+## Cloudflare R2 Integration
+
+The application now automatically uploads article images to Cloudflare R2 for better performance and reliability. Benefits include:
+
+- **Faster Loading**: Images served from Cloudflare's global CDN
+- **Better Reliability**: Eliminates broken image links from external sources
+- **Consistent Naming**: Images are renamed with timestamps and article titles
+- **Automatic Processing**: New articles automatically upload images to R2
+
+### Image Status Indicators
+
+- **Green "Hosted on R2" badge**: Image is hosted on Cloudflare R2
+- **Yellow "External URL" badge**: Image is still using the original external URL
+- **"Upload to R2" button**: Available for external images to migrate them to R2
+
 ## Notes
 
 - The application accesses your existing Firestore database
 - All updates are logged and timestamped
 - Deletions are permanent and cannot be undone
+- R2 credentials are optional but recommended for optimal performance
+- Images uploaded to R2 are cached for one year for maximum performance
 - For security reasons, this tool should only be used in a trusted environment 

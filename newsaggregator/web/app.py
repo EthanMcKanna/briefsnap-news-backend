@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from newsaggregator.storage.firebase_storage import FirebaseStorage
 from newsaggregator.config.settings import FIRESTORE_ARTICLES_COLLECTION, RSS_FEEDS
+from newsaggregator.utils.r2_storage import r2_storage
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
@@ -78,6 +79,7 @@ def view_article(doc_id):
 def update_image(doc_id):
     """Update article image URL"""
     img_url = request.form.get('img_url')
+    upload_to_r2_flag = request.form.get('upload_to_r2') == 'on'
     
     if not img_url:
         flash("Image URL cannot be empty", "error")
@@ -89,18 +91,105 @@ def update_image(doc_id):
         return redirect(url_for('view_article', doc_id=doc_id))
     
     try:
-        # Update the article document
+        # Get article data for title
         article_ref = db.collection(FIRESTORE_ARTICLES_COLLECTION).document(doc_id)
+        article = article_ref.get()
+        if not article.exists:
+            flash("Article not found", "error")
+            return redirect(url_for('view_article', doc_id=doc_id))
+        
+        article_data = article.to_dict()
+        article_title = article_data.get('title', '')
+        
+        final_url = img_url
+        
+        # If user wants to upload to R2, do that first
+        if upload_to_r2_flag:
+            try:
+                r2_url = r2_storage.upload_image_from_url(img_url, article_title)
+                if r2_url:
+                    final_url = r2_url
+                    flash(f"Image uploaded to R2 successfully: {r2_url}", "success")
+                else:
+                    flash("Failed to upload image to R2, using original URL", "warning")
+            except Exception as e:
+                flash(f"Error uploading to R2: {e}, using original URL", "warning")
+        
+        # Update the article document
         article_ref.update({
-            'img_url': img_url,
+            'img_url': final_url,
             'updated_at': datetime.now(timezone.utc)
         })
         
-        flash("Image updated successfully", "success")
+        if not upload_to_r2_flag:
+            flash("Image updated successfully", "success")
+            
     except Exception as e:
         flash(f"Error updating image: {e}", "error")
     
     return redirect(url_for('view_article', doc_id=doc_id))
+
+@app.route('/upload_to_r2/<doc_id>', methods=['POST'])
+def upload_to_r2(doc_id):
+    """Upload current article image to R2 and update the URL"""
+    db = FirebaseStorage.get_db()
+    if not db:
+        flash("Could not connect to Firestore", "error")
+        return redirect(url_for('view_article', doc_id=doc_id))
+    
+    try:
+        # Get current article data
+        article_ref = db.collection(FIRESTORE_ARTICLES_COLLECTION).document(doc_id)
+        article = article_ref.get()
+        if not article.exists:
+            flash("Article not found", "error")
+            return redirect(url_for('view_article', doc_id=doc_id))
+        
+        article_data = article.to_dict()
+        current_img_url = article_data.get('img_url')
+        article_title = article_data.get('title', '')
+        
+        if not current_img_url:
+            flash("No image URL to upload", "error")
+            return redirect(url_for('view_article', doc_id=doc_id))
+        
+        # Check if image is already on R2
+        if current_img_url.startswith(f"https://{r2_storage.client.__dict__.get('_endpoint', {}).get('host', '')}/") or \
+           'images.briefsnap.com' in current_img_url:
+            flash("Image is already hosted on R2", "info")
+            return redirect(url_for('view_article', doc_id=doc_id))
+        
+        # Upload to R2
+        r2_url = r2_storage.upload_image_from_url(current_img_url, article_title)
+        if r2_url:
+            # Update the article document
+            article_ref.update({
+                'img_url': r2_url,
+                'updated_at': datetime.now(timezone.utc)
+            })
+            flash(f"Image uploaded to R2 successfully: {r2_url}", "success")
+        else:
+            flash("Failed to upload image to R2", "error")
+            
+    except Exception as e:
+        flash(f"Error uploading to R2: {e}", "error")
+    
+    return redirect(url_for('view_article', doc_id=doc_id))
+
+@app.route('/check_r2_status')
+def check_r2_status():
+    """Check R2 connection status"""
+    try:
+        status = r2_storage.check_r2_connection()
+        return jsonify({
+            'status': 'connected' if status else 'disconnected',
+            'message': 'R2 connection successful' if status else 'R2 connection failed'
+        })
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': f'Error checking R2 status: {e}'
+        })
 
 @app.route('/update_description/<doc_id>', methods=['POST'])
 def update_description(doc_id):

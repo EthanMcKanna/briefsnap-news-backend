@@ -8,6 +8,7 @@ from newsaggregator.fetchers.article_fetcher import ArticleFetcher
 from newsaggregator.fetchers.exa_fetcher import ExaFetcher
 from newsaggregator.storage.file_storage import FileStorage
 from newsaggregator.storage.firebase_storage import FirebaseStorage
+from newsaggregator.utils.r2_storage import r2_storage
 
 class ArticleProcessor:
     """Class for processing article content workflows."""
@@ -137,10 +138,21 @@ class ArticleProcessor:
                     story['keyPoints'] = key_points
                     print(f"[INFO] Generated {len(key_points)} key points for: {story_title}")
                 
-                # Add image URL
+                # Upload image to R2 instead of using original URL
                 if img_url:
                     print(f"[INFO] Found image URL: {img_url}")
-                    story['img_url'] = img_url
+                    try:
+                        # Upload the image to Cloudflare R2
+                        r2_url = r2_storage.upload_image_from_url(img_url, story_title)
+                        if r2_url:
+                            story['img_url'] = r2_url
+                            print(f"[INFO] Uploaded image to R2: {r2_url}")
+                        else:
+                            print(f"[WARNING] Failed to upload image to R2, using original URL: {img_url}")
+                            story['img_url'] = img_url
+                    except Exception as e:
+                        print(f"[ERROR] Error uploading image to R2: {e}, using original URL: {img_url}")
+                        story['img_url'] = img_url
                 
                 unique_stories.append(story)
 

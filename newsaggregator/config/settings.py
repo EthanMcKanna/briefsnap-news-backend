@@ -66,6 +66,28 @@ EXA_API_KEY = os.environ.get("EXA_API_KEY", "")
 EXA_SEARCH_LIMIT = 5
 EXA_LOOKBACK_DAYS = 7
 
+# Cloudflare R2 configuration
+R2_ACCOUNT_ID = os.environ.get("R2_ACCOUNT_ID", "")
+R2_ACCESS_KEY_ID = os.environ.get("R2_ACCESS_KEY_ID", "")
+R2_SECRET_ACCESS_KEY = os.environ.get("R2_SECRET_ACCESS_KEY", "")
+R2_BUCKET_NAME = "briefsnap-images"
+R2_CUSTOM_DOMAIN = "images.briefsnap.com"
+R2_ENDPOINT_URL = f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+
+# Image optimization configuration
+IMAGE_OPTIMIZATION = {
+    'enabled': True,  # Set to False to disable optimization
+    'convert_to_webp': True,  # Convert all images to WebP format
+    'max_width': 1200,  # Maximum width in pixels
+    'max_height': 800,  # Maximum height in pixels
+    'webp_quality': 85,  # WebP quality (0-100)
+    'jpeg_quality': 90,  # JPEG quality if WebP conversion fails (0-100)
+    'png_optimization': True,  # Optimize PNG files when not converting to WebP
+    'preserve_transparency': True,  # Preserve transparency in PNG/GIF files
+    'max_file_size': 2 * 1024 * 1024,  # Maximum file size (2MB)
+    'min_file_size': 1024,  # Minimum file size (1KB)
+}
+
 # Validate required environment variables
 missing_vars = []
 if not GEMINI_API_KEY:
@@ -73,10 +95,23 @@ if not GEMINI_API_KEY:
 if not EXA_API_KEY:
     missing_vars.append("EXA_API_KEY")
 
+# R2 credentials are optional for basic functionality but recommended
+r2_missing_vars = []
+if not R2_ACCOUNT_ID:
+    r2_missing_vars.append("R2_ACCOUNT_ID")
+if not R2_ACCESS_KEY_ID:
+    r2_missing_vars.append("R2_ACCESS_KEY_ID")
+if not R2_SECRET_ACCESS_KEY:
+    r2_missing_vars.append("R2_SECRET_ACCESS_KEY")
+
 if missing_vars:
     print(f"Error: Missing required environment variables: {', '.join(missing_vars)}")
     print("Please set these environment variables before running the application.")
     sys.exit(1)
+
+if r2_missing_vars:
+    print(f"Warning: Missing R2 environment variables: {', '.join(r2_missing_vars)}")
+    print("R2 image uploading will not be available. Images will use original URLs.")
 
 # Gemini prompt templates by topic
 TOPIC_PROMPTS = {
