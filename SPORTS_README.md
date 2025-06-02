@@ -7,10 +7,12 @@ A reliable sports data aggregation system that fetches upcoming games for popula
 - Fetches upcoming games for major sports: NFL, NBA, MLB, NHL, College Football, College Basketball, and MLS
 - Uses ESPN's free public API for reliable data
 - Stores game data in Firebase Firestore for easy access
-- **Runs automatically every hour** for live score updates
+- **Runs automatically every hour** for complete game data updates
+- **Live score updates every 5 minutes** during sports hours (12 PM - midnight UTC)
 - **Sports news summaries generated 4 times daily** (6 AM, 12 PM, 6 PM, Midnight Central Time) using Gemini 2.5 Flash with Google Search
 - **Smart update detection** - only updates games when scores, status, or other data changes
 - **Live game tracking** - identifies and prioritizes in-progress games
+- **Efficient live updates** - lightweight fetcher that only updates active games
 - Includes comprehensive game information: teams, venues, schedules, broadcasts, and odds
 - Automatically cleans up old data (30+ days)
 - Provides detailed statistics and summaries
@@ -156,10 +158,49 @@ The system provides detailed logging including:
 ### Logs
 Check GitHub Actions logs for detailed error information and execution statistics.
 
+## Live Updates System
+
+The system now includes a dedicated live update mechanism:
+
+### Main Sports Aggregator (`main_sports.py`)
+- Runs hourly via GitHub Actions
+- Fetches complete game data for next 7 days
+- Generates sports news summaries
+- Handles full game lifecycle (creation, updates, completion)
+
+### Live Sports Updater (`main_live_sports.py`)
+- Runs every 5 minutes during sports hours (12 PM - midnight UTC)
+- Only fetches and updates live/in-progress games
+- Updates scores, time remaining, and game status
+- Skips games that don't exist in database
+- Much faster and more efficient than full updates
+
+### Key Benefits
+- **Real-time accuracy**: Live games updated every 5 minutes
+- **Efficient**: Only processes games that are actually live
+- **Smart scheduling**: Runs during typical sports hours only
+- **Minimal resources**: Uses same Firebase database, no duplicates
+- **Change tracking**: Logs exactly what changed in each update
+
+## Testing
+
+Run the test scripts to verify functionality:
+
+```bash
+# Test the main sports aggregator
+python test_sports_data.py
+
+# Test the live updater
+python test_live_sports.py
+
+# Test both systems
+python main_sports.py     # Full update
+python main_live_sports.py  # Live update
+```
+
 ## Future Enhancements
 
 Potential additions:
-- Live score updates during games
 - Player statistics and injury reports
 - Weather conditions for outdoor games
 - Playoff brackets and tournament trees

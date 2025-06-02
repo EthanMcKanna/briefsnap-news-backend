@@ -655,4 +655,203 @@ class SportsStorage:
                 print(f"Cleaned up {len(docs)} old news summaries")
                 
         except Exception as e:
-            print(f"Error cleaning up old news summaries: {e}") 
+            print(f"Error cleaning up old news summaries: {e}")
+    
+    @classmethod
+    def update_live_games_only(cls, live_games: Dict[str, List[Dict]]) -> Dict:
+        """Update only live games with current scores and time.
+        
+        This is a lightweight update method that only touches games that:
+        1. Already exist in the database
+        2. Are currently live/in-progress
+        3. Have actual changes in score, status, or time
+        
+        Args:
+            live_games: Dictionary of live games by sport
+            
+        Returns:
+            Dictionary with update statistics
+        """
+        db = FirebaseStorage.get_db()
+        if not db:
+            print("No Firestore connection available")
+            return {'success': False, 'error': 'No database connection'}
+        
+        try:
+            timestamp = datetime.now(timezone.utc)
+            
+            update_stats = {
+                'success': True,
+                'total_processed': 0,
+                'games_updated': 0,
+                'games_skipped': 0,
+                'games_not_found': 0,
+                'by_sport': {},
+                'live_games_found': [],
+                'updates_made': []
+            }
+            
+            for sport, games in live_games.items():
+                sport_stats = {
+                    'processed': 0,
+                    'updated': 0,
+                    'skipped': 0,
+                    'not_found': 0
+                }
+                
+                for game in games:
+                    if not game.get('id'):
+                        continue
+                    
+                    update_stats['total_processed'] += 1
+                    sport_stats['processed'] += 1
+                    
+                    # Create document ID
+                    doc_id = f"{sport}_{game['id']}"
+                    doc_ref = db.collection(cls.SPORTS_GAMES_COLLECTION).document(doc_id)
+                    
+                    # Check if game exists
+                    existing_doc = doc_ref.get()
+                    
+                    if not existing_doc.exists:
+                        # Game doesn't exist in database, skip live update
+                        update_stats['games_not_found'] += 1
+                        sport_stats['not_found'] += 1
+                        print(f"Skipping {sport.upper()} game {game.get('away_team', {}).get('abbreviation', 'TBD')} @ {game.get('home_team', {}).get('abbreviation', 'TBD')} - not in database")
+                        continue
+                    
+                    existing_data = existing_doc.to_dict()
+                    
+                    # Prepare minimal update data focused on live changes
+                    update_data = {
+                        'status': game.get('status'),
+                        'home_score': game.get('home_score'),
+                        'away_score': game.get('away_score'),
+                        'time_remaining': game.get('time_remaining'),
+                        'last_updated': timestamp,
+                    }
+                    
+                    # Update team scores if available
+                    if game.get('home_team', {}).get('score') is not None:
+                        update_data['home_team.score'] = game['home_team']['score']
+                    if game.get('away_team', {}).get('score') is not None:
+                        update_data['away_team.score'] = game['away_team']['score']
+                    
+                    # Check if update is needed using focused live game criteria
+                    needs_update = cls._needs_live_update(existing_data, update_data)
+                    
+                    if needs_update:
+                        # Detect what changed
+                        changes = cls._detect_live_changes(existing_data, update_data)
+                        
+                        if changes:
+                            # Update only the changed fields
+                            update_data['update_count'] = existing_data.get('update_count', 0) + 1
+                            update_data['last_changes'] = changes
+                            update_data['live_update'] = True  # Flag to indicate this was a live update
+                            
+                            # Use merge=True to only update specified fields
+                            doc_ref.set(update_data, merge=True)
+                            
+                            update_stats['games_updated'] += 1
+                            sport_stats['updated'] += 1
+                            
+                            # Track the update for logging
+                            game_info = {
+                                'sport': sport.upper(),
+                                'away_team': game.get('away_team', {}).get('abbreviation', 'TBD'),
+                                'home_team': game.get('home_team', {}).get('abbreviation', 'TBD'),
+                                'changes': changes,
+                                'score': f"{game.get('away_score', 0)}-{game.get('home_score', 0)}",
+                                'status': game.get('status'),
+                                'time_remaining': game.get('time_remaining', '')
+                            }
+                            update_stats['updates_made'].append(game_info)
+                            update_stats['live_games_found'].append(game_info)
+                            
+                            print(f"🔴 Updated live {sport.upper()} game: {game_info['away_team']} {game.get('away_score', 0)} - {game.get('home_score', 0)} {game_info['home_team']} ({', '.join(changes)})")
+                        else:
+                            update_stats['games_skipped'] += 1
+                            sport_stats['skipped'] += 1
+                    else:
+                        update_stats['games_skipped'] += 1
+                        sport_stats['skipped'] += 1
+                
+                if sport_stats['processed'] > 0:
+                    update_stats['by_sport'][sport] = sport_stats
+            
+            print(f"Live games update complete: {update_stats['games_updated']} updated, {update_stats['games_skipped']} skipped, {update_stats['games_not_found']} not found in database")
+            
+            return update_stats
+            
+        except Exception as e:
+            print(f"Error updating live games: {e}")
+            return {'success': False, 'error': str(e)}
+    
+    @classmethod
+    def _needs_live_update(cls, existing_data: Dict, update_data: Dict) -> bool:
+        """Check if a live game needs updating - more aggressive than regular updates.
+        
+        Args:
+            existing_data: Current game data in database
+            update_data: New live game data
+            
+        Returns:
+            True if update is needed, False otherwise
+        """
+        # Always update if more than 2 minutes have passed (live games change frequently)
+        if existing_data.get('last_updated'):
+            time_diff = update_data['last_updated'] - existing_data['last_updated']
+            if time_diff.total_seconds() > 120:  # 2 minutes
+                return True
+        
+        # Check for any score changes
+        if (existing_data.get('home_score') != update_data.get('home_score') or
+            existing_data.get('away_score') != update_data.get('away_score')):
+            return True
+        
+        # Check for status changes
+        if existing_data.get('status') != update_data.get('status'):
+            return True
+        
+        # Check for time remaining changes
+        if existing_data.get('time_remaining') != update_data.get('time_remaining'):
+            return True
+        
+        return False
+    
+    @classmethod
+    def _detect_live_changes(cls, existing_data: Dict, update_data: Dict) -> List[str]:
+        """Detect changes in live game data.
+        
+        Args:
+            existing_data: Current game data in database
+            update_data: New live game data
+            
+        Returns:
+            List of change descriptions
+        """
+        changes = []
+        
+        # Score changes
+        old_home = existing_data.get('home_score')
+        new_home = update_data.get('home_score')
+        old_away = existing_data.get('away_score')
+        new_away = update_data.get('away_score')
+        
+        if old_home != new_home or old_away != new_away:
+            old_score = f"{old_away or 0}-{old_home or 0}"
+            new_score = f"{new_away or 0}-{new_home or 0}"
+            changes.append(f"score: {old_score} → {new_score}")
+        
+        # Status changes
+        if existing_data.get('status') != update_data.get('status'):
+            changes.append(f"status: {existing_data.get('status')} → {update_data.get('status')}")
+        
+        # Time remaining changes
+        if existing_data.get('time_remaining') != update_data.get('time_remaining'):
+            old_time = existing_data.get('time_remaining') or 'No time'
+            new_time = update_data.get('time_remaining') or 'No time'
+            changes.append(f"time: {old_time} → {new_time}")
+        
+        return changes 

@@ -1,0 +1,272 @@
+"""Lightweight fetcher for live sports games updates."""
+
+import requests
+import json
+from datetime import datetime, timedelta
+from typing import List, Dict, Optional
+import time
+
+class LiveSportsFetcher:
+    """Efficient fetcher for updating live/in-progress games only."""
+    
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        })
+        
+        # ESPN API endpoints for different sports
+        self.espn_endpoints = {
+            'nfl': 'http://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard',
+            'nba': 'http://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard',
+            'mlb': 'http://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard',
+            'nhl': 'http://site.api.espn.com/apis/site/v2/sports/hockey/nhl/scoreboard',
+            'ncaaf': 'http://site.api.espn.com/apis/site/v2/sports/football/college-football/scoreboard',
+            'ncaab': 'http://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard',
+            'mls': 'http://site.api.espn.com/apis/site/v2/sports/soccer/usa.1/scoreboard',
+        }
+        
+        # Sport display names
+        self.sport_names = {
+            'nfl': 'NFL',
+            'nba': 'NBA',
+            'mlb': 'MLB',
+            'nhl': 'NHL',
+            'ncaaf': 'College Football',
+            'ncaab': 'College Basketball',
+            'mls': 'MLS',
+        }
+        
+        # Status keywords that indicate live games
+        self.live_status_keywords = [
+            'live', 'in progress', 'active', '1st', '2nd', '3rd', '4th', 
+            'quarter', 'period', 'inning', 'half', 'overtime', 'ot',
+            'bottom', 'top', 'end', 'halftime', 'intermission'
+        ]
+    
+    def fetch_live_games_only(self, sport: str) -> List[Dict]:
+        """Fetch only live/in-progress games for a specific sport.
+        
+        Args:
+            sport: Sport code (nfl, nba, mlb, etc.)
+            
+        Returns:
+            List of live game dictionaries
+        """
+        if sport not in self.espn_endpoints:
+            print(f"Sport '{sport}' not supported")
+            return []
+        
+        # Only fetch today's games for live updates
+        today = datetime.now().strftime('%Y%m%d')
+        
+        try:
+            url = f"{self.espn_endpoints[sport]}?dates={today}"
+            print(f"Checking for live {sport.upper()} games...")
+            
+            response = self.session.get(url, timeout=8)
+            response.raise_for_status()
+            
+            data = response.json()
+            live_games = []
+            
+            if 'events' in data:
+                for event in data['events']:
+                    # Quick check if game is live before full parsing
+                    if self._is_game_live(event):
+                        game = self._parse_espn_game_quick(event, sport)
+                        if game:
+                            live_games.append(game)
+            
+            if live_games:
+                print(f"Found {len(live_games)} live {sport.upper()} games")
+            
+            return live_games
+            
+        except Exception as e:
+            print(f"Error fetching live {sport} games: {e}")
+            return []
+    
+    def _is_game_live(self, event: Dict) -> bool:
+        """Quick check if a game is currently live.
+        
+        Args:
+            event: ESPN event data
+            
+        Returns:
+            True if game appears to be live, False otherwise
+        """
+        try:
+            status = event.get('status', {}).get('type', {}).get('description', '').lower()
+            
+            # Check for live status keywords
+            return any(keyword in status for keyword in self.live_status_keywords)
+            
+        except Exception:
+            return False
+    
+    def _parse_espn_game_quick(self, event: Dict, sport: str) -> Optional[Dict]:
+        """Lightweight parsing focused on live game essentials.
+        
+        Args:
+            event: ESPN event data
+            sport: Sport code
+            
+        Returns:
+            Essential game data dictionary or None
+        """
+        try:
+            game = {
+                'id': event.get('id'),
+                'sport': self.sport_names.get(sport, sport.upper()),
+                'sport_code': sport,
+                'date': event.get('date'),
+                'status': event.get('status', {}).get('type', {}).get('description', 'TBD'),
+                'home_team': None,
+                'away_team': None,
+                'home_score': None,
+                'away_score': None,
+                'time_remaining': None,
+                'last_updated': datetime.now(),
+            }
+            
+            # Parse essential team and score data
+            if 'competitions' in event and event['competitions']:
+                competition = event['competitions'][0]
+                
+                # Teams and scores
+                if 'competitors' in competition:
+                    for competitor in competition['competitors']:
+                        team_info = {
+                            'id': competitor.get('id'),
+                            'name': competitor.get('team', {}).get('displayName'),
+                            'abbreviation': competitor.get('team', {}).get('abbreviation'),
+                        }
+                        
+                        score = competitor.get('score')
+                        if score:
+                            team_info['score'] = int(score)
+                        
+                        if competitor.get('homeAway') == 'home':
+                            game['home_team'] = team_info
+                            game['home_score'] = team_info.get('score')
+                        else:
+                            game['away_team'] = team_info
+                            game['away_score'] = team_info.get('score')
+                
+                # Status and time
+                status = competition.get('status', {})
+                game['status'] = status.get('type', {}).get('description', 'TBD')
+                if 'displayClock' in status:
+                    game['time_remaining'] = status['displayClock']
+            
+            # Format date
+            if game['date']:
+                try:
+                    dt = datetime.fromisoformat(game['date'].replace('Z', '+00:00'))
+                    game['timestamp'] = dt.timestamp()
+                except:
+                    pass
+            
+            return game
+            
+        except Exception as e:
+            print(f"Error parsing live ESPN game: {e}")
+            return None
+    
+    def fetch_all_live_games(self) -> Dict[str, List[Dict]]:
+        """Fetch live games for all supported sports.
+        
+        Returns:
+            Dictionary with sport codes as keys and live game lists as values
+        """
+        all_live_games = {}
+        total_live_games = 0
+        
+        for sport in self.espn_endpoints.keys():
+            live_games = self.fetch_live_games_only(sport)
+            all_live_games[sport] = live_games
+            total_live_games += len(live_games)
+            
+            # Short delay between sports for rate limiting
+            time.sleep(0.3)
+        
+        print(f"Total live games found across all sports: {total_live_games}")
+        return all_live_games
+    
+    def get_live_games_summary(self, all_live_games: Dict[str, List[Dict]]) -> Dict:
+        """Generate a summary of all live games.
+        
+        Args:
+            all_live_games: Dictionary of live games by sport
+            
+        Returns:
+            Summary dictionary
+        """
+        total_live = sum(len(games) for games in all_live_games.values())
+        
+        summary = {
+            'total_live_games': total_live,
+            'sports_with_live_games': len([sport for sport, games in all_live_games.items() if games]),
+            'last_updated': datetime.now().isoformat(),
+            'by_sport': {},
+            'live_games_detail': [],
+        }
+        
+        # Count by sport and collect game details
+        for sport, games in all_live_games.items():
+            if games:
+                summary['by_sport'][sport] = {
+                    'count': len(games),
+                    'sport_name': self.sport_names.get(sport, sport.upper())
+                }
+                
+                # Add game details for summary
+                for game in games:
+                    game_detail = {
+                        'sport': game.get('sport'),
+                        'away_team': game.get('away_team', {}).get('abbreviation', 'TBD'),
+                        'home_team': game.get('home_team', {}).get('abbreviation', 'TBD'),
+                        'away_score': game.get('away_score', 0),
+                        'home_score': game.get('home_score', 0),
+                        'status': game.get('status'),
+                        'time_remaining': game.get('time_remaining', ''),
+                    }
+                    summary['live_games_detail'].append(game_detail)
+        
+        return summary
+    
+    def should_check_for_live_games(self) -> bool:
+        """Determine if we should check for live games based on time of day.
+        
+        Sports typically happen during certain hours (US times):
+        - NFL: Sunday 1PM-11PM ET, Monday/Thursday 8PM-11PM ET
+        - NBA/NHL: 7PM-11PM ET most nights
+        - MLB: 7PM-11PM ET most nights, some day games
+        - College: Evenings and weekends
+        
+        Returns:
+            True if it's likely time for live sports, False otherwise
+        """
+        now = datetime.now()
+        hour = now.hour
+        weekday = now.weekday()  # 0=Monday, 6=Sunday
+        
+        # Always check during prime sports hours (6 PM - midnight ET)
+        if 18 <= hour <= 23:
+            return True
+        
+        # Always check during weekend afternoons (12 PM - 6 PM)
+        if weekday in [5, 6] and 12 <= hour <= 18:  # Saturday/Sunday
+            return True
+        
+        # Check during weekday lunch hours for possible day games
+        if 11 <= hour <= 14:
+            return True
+        
+        # Skip late night/early morning hours when games are rare
+        if 0 <= hour <= 9:
+            return False
+        
+        # Default to checking during reasonable hours
+        return True 
