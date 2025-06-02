@@ -122,7 +122,7 @@ def update_image(doc_id):
         })
         
         if not upload_to_r2_flag:
-        flash("Image updated successfully", "success")
+            flash("Image updated successfully", "success")
             
     except Exception as e:
         flash(f"Error updating image: {e}", "error")

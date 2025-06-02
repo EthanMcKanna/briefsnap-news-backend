@@ -4,9 +4,9 @@ import json
 import google.generativeai as genai
 from google.ai.generativelanguage_v1beta.types import content
 
-from newsaggregator.utils.retry import retry_with_backoff
+from newsaggregator.utils.retry import smart_retry_with_backoff, api_manager
 from newsaggregator.config.settings import (
-    GEMINI_API_KEY, TOPIC_PROMPTS, DEFAULT_PROMPT,
+    TOPIC_PROMPTS, DEFAULT_PROMPT,
     BRIEF_GENERATION_CONFIG
 )
 
@@ -22,7 +22,8 @@ class GeminiProcessor:
         
     def configure_gemini(self):
         """Configure the Gemini API client."""
-        genai.configure(api_key=GEMINI_API_KEY)
+        # The API manager handles configuration automatically
+        pass
     
     def setup_gemini(self):
         """Configure and return Gemini model for summaries.
@@ -66,7 +67,7 @@ class GeminiProcessor:
         }
         
         model = genai.GenerativeModel(
-            model_name="gemini-2.0-flash",
+            model_name="gemini-2.5-flash-preview-05-20",
             generation_config=generation_config,
             safety_settings=[
                 {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
@@ -102,7 +103,7 @@ class GeminiProcessor:
         self.brief_chat_session = model.start_chat()
         return self.brief_chat_session
     
-    @retry_with_backoff
+    @smart_retry_with_backoff
     def generate_summary(self, content_text, topic='TOP_NEWS'):
         """Generate summary and top stories for a specific topic.
         
@@ -147,7 +148,7 @@ class GeminiProcessor:
             print(f"Error generating summary: {e}")
             return None
     
-    @retry_with_backoff
+    @smart_retry_with_backoff
     def generate_brief_summary(self, summary_text, topic):
         """Generate brief bullet-point summary.
         
@@ -164,8 +165,8 @@ class GeminiProcessor:
         {summary_text}
 
         Please provide:
-        1. A "BriefSummary" field with 1-2 sentences highlighting only the most crucial point
-        2. A "BulletPoints" array with 3-5 extremely short bullet points of key takeaways
+        1. A "BriefSummary" field with a succint 1 sentence summary
+        2. A "BulletPoints" array with 2-4 extremely short bullet points of key takeaways
 
         Format as JSON with exactly these fields."""
 
@@ -179,7 +180,7 @@ class GeminiProcessor:
             print(f"[ERROR] Failed to generate brief summary: {e}")
             return None
     
-    @retry_with_backoff
+    @smart_retry_with_backoff
     def generate_weekly_summary(self, content_text, topic):
         """Generate weekly summary for a specific topic.
         

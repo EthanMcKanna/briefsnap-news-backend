@@ -6,7 +6,8 @@ from exa_py import Exa
 import google.generativeai as genai
 from google.ai.generativelanguage_v1beta.types import content
 
-from newsaggregator.config.settings import EXA_API_KEY, EXA_SEARCH_LIMIT, EXA_LOOKBACK_DAYS, GEMINI_API_KEY
+from newsaggregator.config.settings import EXA_API_KEY, EXA_SEARCH_LIMIT, EXA_LOOKBACK_DAYS
+from newsaggregator.utils.retry import api_manager, smart_retry_with_backoff
 from newsaggregator.fetchers.article_fetcher import ArticleFetcher
 
 class ExaFetcher:
@@ -16,6 +17,7 @@ class ExaFetcher:
         """Initialize the Exa API client."""
         self.client = Exa(api_key=EXA_API_KEY)
         
+    @smart_retry_with_backoff
     def fetch_detailed_article(self, story_title):
         """Fetch a detailed article for a given story title using Exa API and Gemini.
         
@@ -151,15 +153,9 @@ class ExaFetcher:
                 print(f"[WARNING] No search results found, generating article without references")
                 
                 # Initialize Gemini
-                genai.configure(api_key=GEMINI_API_KEY)
+                # API manager handles configuration automatically
                 model = genai.GenerativeModel(
-                    model_name="gemini-2.0-flash-lite",
-                    generation_config={
-                        "temperature": 0.7,
-                        "top_p": 0.9,
-                        "top_k": 40,
-                        "max_output_tokens": 2048,
-                    }
+                    model_name="gemini-2.5-flash-preview-05-20",
                 )
                 
                 prompt = f"""
@@ -185,15 +181,9 @@ class ExaFetcher:
             combined_text = "\n\n---\n\n".join(article_contents)
             
             # Initialize Gemini
-            genai.configure(api_key=GEMINI_API_KEY)
+            # API manager handles configuration automatically
             model = genai.GenerativeModel(
-                model_name="gemini-2.0-flash",
-                generation_config={
-                    "temperature": 1,
-                    "top_p": 0.95,
-                    "top_k": 40,
-                    "max_output_tokens": 8192,
-                }
+                model_name="gemini-2.5-flash-preview-05-20",
             )
             
             prompt = f"""
@@ -223,6 +213,7 @@ class ExaFetcher:
             traceback.print_exc()
             return "", [], None, "", []
             
+    @smart_retry_with_backoff
     def _generate_summary(self, article_text):
         """Generate a concise summary of the article.
         
@@ -234,7 +225,7 @@ class ExaFetcher:
         """
         try:
             print("[INFO] Generating article summary")
-            genai.configure(api_key=GEMINI_API_KEY)
+            # API manager handles configuration automatically
             
             # Use structured output with schema for consistent formatting
             generation_config = {
@@ -282,6 +273,7 @@ class ExaFetcher:
             print(f"[ERROR] Failed to generate article summary: {e}")
             return ""
             
+    @smart_retry_with_backoff
     def _generate_key_points(self, article_text):
         """Extract key points from the article.
         
@@ -293,7 +285,7 @@ class ExaFetcher:
         """
         try:
             print("[INFO] Generating article key points")
-            genai.configure(api_key=GEMINI_API_KEY)
+            # API manager handles configuration automatically
             
             # Use structured output with schema for consistent formatting
             generation_config = {

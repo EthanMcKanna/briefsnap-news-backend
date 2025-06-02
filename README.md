@@ -14,6 +14,14 @@ A modular and efficient system for aggregating, processing, and summarizing news
 - Sends notifications via Firebase Cloud Messaging
 - Automated processing via GitHub Actions twice daily (7am and 5pm Central Time)
 
+### Smart Rate Limit Handling
+- Intelligent retry logic that respects Gemini API rate limits
+- Automatic parsing of retry delays from API error responses
+- Support for multiple Gemini API keys with automatic failover
+- Smart backoff strategies for different types of API errors
+- Real-time API key switching when rate limits are reached
+- Enhanced error logging with detailed retry information
+
 ### Sports Data Aggregation
 - Fetches upcoming games for major sports (NFL, NBA, MLB, NHL, College Football, College Basketball, MLS)
 - Uses ESPN's free public API - no paid subscriptions required
@@ -45,6 +53,7 @@ The system has been refactored into a modular structure:
 3. Place your Firebase credentials in `firebase-credentials.json` at the root of the project
 4. Configure GitHub repository secrets:
    - `GEMINI_API_KEY`: Your Google Gemini API key
+   - `GEMINI_API_KEY_2`: (Optional) Secondary Gemini API key for rate limit fallback
    - `EXA_API_KEY`: Your Exa API key
    - `FIREBASE_CREDENTIALS`: The entire contents of your firebase-credentials.json file
 

@@ -32,7 +32,7 @@ FAILED_URLS_FILE = DATA_DIR / 'failed_urls.json'
 LAST_SUMMARY_FILE = DATA_DIR / 'last_summary_time.txt'
 
 # Fetch configuration
-ARTICLES_PER_FEED = 10
+ARTICLES_PER_FEED = 20
 REQUEST_DELAY = 1  # seconds
 REQUEST_TIMEOUT = 10  # seconds
 MIN_ARTICLE_LENGTH = 200  # characters
@@ -57,9 +57,11 @@ FIRESTORE_ARTICLES_COLLECTION = 'articles'
 
 # Gemini API configuration
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_API_KEY_2 = os.environ.get("GEMINI_API_KEY_2", "")  # Secondary API key for rate limit fallback
 GEMINI_BASE_DELAY = 1  # Base delay between Gemini API calls in seconds
 GEMINI_MAX_RETRIES = 5
-GEMINI_MAX_DELAY = 32  # Maximum delay between retries in seconds
+GEMINI_MAX_DELAY = 120  # Maximum delay between retries in seconds (increased for rate limits)
+GEMINI_RATE_LIMIT_DELAY = 60  # Default delay for rate limit errors in seconds
 
 # Exa API configuration
 EXA_API_KEY = os.environ.get("EXA_API_KEY", "")
@@ -94,6 +96,11 @@ if not GEMINI_API_KEY:
     missing_vars.append("GEMINI_API_KEY")
 if not EXA_API_KEY:
     missing_vars.append("EXA_API_KEY")
+
+# Warn about missing secondary API key
+if not GEMINI_API_KEY_2:
+    print("Warning: GEMINI_API_KEY_2 is not set. Rate limit fallback will not be available.")
+    print("For better rate limit handling, consider setting a second Gemini API key.")
 
 # R2 credentials are optional for basic functionality but recommended
 r2_missing_vars = []
