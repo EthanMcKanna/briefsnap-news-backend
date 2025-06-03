@@ -94,8 +94,35 @@ class LiveSportsFetcher:
         
         return live_games
     
+    def _is_game_live_or_recently_finished(self, event: Dict) -> bool:
+        """Check if a game is currently live OR recently finished.
+        
+        We need to catch both live games and games that just finished
+        to properly update their final status.
+        
+        Args:
+            event: ESPN event data
+            
+        Returns:
+            True if game is live or recently finished, False otherwise
+        """
+        try:
+            status = event.get('status', {}).get('type', {}).get('description', '')
+            status_lower = status.lower()
+            
+            # Check for live status keywords
+            is_live = any(keyword in status_lower for keyword in self.live_status_keywords)
+            
+            # Also check for recently finished games
+            is_recently_finished = status in ['Final', 'Final/OT', 'Final/SO', 'Completed']
+            
+            return is_live or is_recently_finished
+            
+        except Exception:
+            return False
+    
     def _is_game_live(self, event: Dict) -> bool:
-        """Quick check if a game is currently live.
+        """Quick check if a game is currently live (backward compatibility).
         
         Args:
             event: ESPN event data
@@ -103,14 +130,7 @@ class LiveSportsFetcher:
         Returns:
             True if game appears to be live, False otherwise
         """
-        try:
-            status = event.get('status', {}).get('type', {}).get('description', '').lower()
-            
-            # Check for live status keywords
-            return any(keyword in status for keyword in self.live_status_keywords)
-            
-        except Exception:
-            return False
+        return self._is_game_live_or_recently_finished(event)
     
     def _parse_espn_game_quick(self, event: Dict, sport: str) -> Optional[Dict]:
         """Lightweight parsing focused on live game essentials.
@@ -211,44 +231,70 @@ class LiveSportsFetcher:
         return all_live_games
     
     def get_live_games_summary(self, all_live_games: Dict[str, List[Dict]]) -> Dict:
-        """Generate a summary of all live games.
+        """Generate a summary of all live and recently finished games.
         
         Args:
-            all_live_games: Dictionary of live games by sport
+            all_live_games: Dictionary of live/recent games by sport
             
         Returns:
             Summary dictionary
         """
-        total_live = sum(len(games) for games in all_live_games.values())
+        total_games = sum(len(games) for games in all_live_games.values())
+        
+        # Separate live vs finished games
+        live_count = 0
+        finished_count = 0
+        
+        for games in all_live_games.values():
+            for game in games:
+                status = game.get('status', '')
+                if status in ['Final', 'Final/OT', 'Final/SO', 'Completed']:
+                    finished_count += 1
+                else:
+                    live_count += 1
         
         summary = {
-            'total_live_games': total_live,
-            'sports_with_live_games': len([sport for sport, games in all_live_games.items() if games]),
+            'total_games': total_games,
+            'total_live_games': live_count,
+            'total_finished_games': finished_count,
+            'sports_with_games': len([sport for sport, games in all_live_games.items() if games]),
             'last_updated': datetime.now().isoformat(),
             'by_sport': {},
             'live_games_detail': [],
+            'finished_games_detail': [],
         }
         
         # Count by sport and collect game details
         for sport, games in all_live_games.items():
             if games:
-                summary['by_sport'][sport] = {
-                    'count': len(games),
-                    'sport_name': self.sport_names.get(sport, sport.upper())
-                }
+                sport_live = 0
+                sport_finished = 0
                 
-                # Add game details for summary
                 for game in games:
+                    status = game.get('status', '')
                     game_detail = {
                         'sport': game.get('sport'),
                         'away_team': game.get('away_team', {}).get('abbreviation', 'TBD'),
                         'home_team': game.get('home_team', {}).get('abbreviation', 'TBD'),
                         'away_score': game.get('away_score', 0),
                         'home_score': game.get('home_score', 0),
-                        'status': game.get('status'),
+                        'status': status,
                         'time_remaining': game.get('time_remaining', ''),
                     }
-                    summary['live_games_detail'].append(game_detail)
+                    
+                    if status in ['Final', 'Final/OT', 'Final/SO', 'Completed']:
+                        sport_finished += 1
+                        summary['finished_games_detail'].append(game_detail)
+                    else:
+                        sport_live += 1
+                        summary['live_games_detail'].append(game_detail)
+                
+                summary['by_sport'][sport] = {
+                    'total': len(games),
+                    'live': sport_live,
+                    'finished': sport_finished,
+                    'sport_name': self.sport_names.get(sport, sport.upper())
+                }
         
         return summary
     

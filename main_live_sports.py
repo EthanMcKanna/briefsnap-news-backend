@@ -37,19 +37,26 @@ def main():
         # Generate live games summary
         live_summary = live_fetcher.get_live_games_summary(all_live_games)
         
-        print(f"\n====== Live Games Summary ======")
-        print(f"Total live games found: {live_summary['total_live_games']}")
-        print(f"Sports with live games: {live_summary['sports_with_live_games']}")
+        print(f"\n====== Live/Recent Games Summary ======")
+        print(f"Total games found: {live_summary['total_games']}")
+        print(f"Live games: {live_summary['total_live_games']}")
+        print(f"Recently finished: {live_summary['total_finished_games']}")
+        print(f"Sports with games: {live_summary['sports_with_games']}")
         
-        if live_summary['total_live_games'] == 0:
-            print("No live games found - skipping database updates")
+        if live_summary['total_games'] == 0:
+            print("No live or recently finished games found - skipping database updates")
             return 0
         
-        # Display live games found
+        # Display games found by sport
         if live_summary['by_sport']:
-            print("\nLive games by sport:")
+            print("\nGames by sport:")
             for sport, info in live_summary['by_sport'].items():
-                print(f"  {info['sport_name']}: {info['count']} live games")
+                if info['live'] > 0 and info['finished'] > 0:
+                    print(f"  {info['sport_name']}: {info['live']} live, {info['finished']} finished")
+                elif info['live'] > 0:
+                    print(f"  {info['sport_name']}: {info['live']} live games")
+                elif info['finished'] > 0:
+                    print(f"  {info['sport_name']}: {info['finished']} recently finished")
         
         # Show live game details
         if live_summary['live_games_detail']:
@@ -60,6 +67,13 @@ def main():
                     print(f"    {game['status']} - {game['time_remaining']}")
                 elif game['status']:
                     print(f"    {game['status']}")
+        
+        # Show recently finished games
+        if live_summary['finished_games_detail']:
+            print(f"\n✅ Recently Finished Games:")
+            for game in live_summary['finished_games_detail']:
+                print(f"  {game['sport']}: {game['away_team']} {game['away_score']} - {game['home_score']} {game['home_team']}")
+                print(f"    {game['status']}")
         
         # Update only the live games in Firebase
         print(f"\n====== Updating Live Games in Firebase ======")
