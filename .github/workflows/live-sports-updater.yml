@@ -2,11 +2,11 @@ name: Live Sports Updater
 
 on:
   schedule:
-    # Run every 5 minutes during prime sports hours (12 PM - midnight UTC)
-    # This covers most US sports times efficiently
-    - cron: '*/5 12-23 * * *'
-    # Also run every 10 minutes during weekend afternoons (covers college games)
-    - cron: '*/10 16-23 * * 6,0'  # Saturday/Sunday 4 PM - 11 PM UTC
+    # Run every 5 minutes during US sports hours (11 AM ET - 2 AM ET)
+    # Covers 15:00-06:00 UTC (11 AM EDT - 2 AM EDT) and 16:00-07:00 UTC (11 AM EST - 2 AM EST)
+    - cron: '*/5 15-23,0-6 * * *'  # Main sports window
+    # Also run every 10 minutes during weekend afternoons (earlier college games)
+    - cron: '*/10 14-23,0-6 * * 6,0'  # Saturday/Sunday extended hours
   workflow_dispatch:  # Allow manual triggering
 
 jobs:

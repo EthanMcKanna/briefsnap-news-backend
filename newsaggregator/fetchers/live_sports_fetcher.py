@@ -39,7 +39,7 @@ class LiveSportsFetcher:
         
         # Status keywords that indicate live games
         self.live_status_keywords = [
-            'live', 'in progress', 'active', '1st', '2nd', '3rd', '4th', 
+            'live', 'in progress', 'In Progress', 'active', '1st', '2nd', '3rd', '4th', 
             'quarter', 'period', 'inning', 'half', 'overtime', 'ot',
             'bottom', 'top', 'end', 'halftime', 'intermission'
         ]
@@ -57,35 +57,42 @@ class LiveSportsFetcher:
             print(f"Sport '{sport}' not supported")
             return []
         
-        # Only fetch today's games for live updates
+        # Check both today and yesterday for live games (games can span midnight)
         today = datetime.now().strftime('%Y%m%d')
+        yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y%m%d')
+        dates_to_check = [yesterday, today]
         
-        try:
-            url = f"{self.espn_endpoints[sport]}?dates={today}"
-            print(f"Checking for live {sport.upper()} games...")
-            
-            response = self.session.get(url, timeout=8)
-            response.raise_for_status()
-            
-            data = response.json()
-            live_games = []
-            
-            if 'events' in data:
-                for event in data['events']:
-                    # Quick check if game is live before full parsing
-                    if self._is_game_live(event):
-                        game = self._parse_espn_game_quick(event, sport)
-                        if game:
-                            live_games.append(game)
-            
-            if live_games:
-                print(f"Found {len(live_games)} live {sport.upper()} games")
-            
-            return live_games
-            
-        except Exception as e:
-            print(f"Error fetching live {sport} games: {e}")
-            return []
+        live_games = []
+        
+        for date in dates_to_check:
+            try:
+                url = f"{self.espn_endpoints[sport]}?dates={date}"
+                print(f"Checking for live {sport.upper()} games on {date}...")
+                
+                response = self.session.get(url, timeout=8)
+                response.raise_for_status()
+                
+                data = response.json()
+                
+                if 'events' in data:
+                    for event in data['events']:
+                        # Quick check if game is live before full parsing
+                        if self._is_game_live(event):
+                            game = self._parse_espn_game_quick(event, sport)
+                            if game:
+                                live_games.append(game)
+                
+                # Short delay between date requests
+                time.sleep(0.2)
+                
+            except Exception as e:
+                print(f"Error fetching live {sport} games for {date}: {e}")
+                continue
+        
+        if live_games:
+            print(f"Found {len(live_games)} live {sport.upper()} games")
+        
+        return live_games
     
     def _is_game_live(self, event: Dict) -> bool:
         """Quick check if a game is currently live.
@@ -157,8 +164,17 @@ class LiveSportsFetcher:
                 # Status and time
                 status = competition.get('status', {})
                 game['status'] = status.get('type', {}).get('description', 'TBD')
-                if 'displayClock' in status:
+                
+                # For baseball and sports with innings/periods, use detail instead of clock
+                status_detail = status.get('type', {}).get('detail', '')
+                if status_detail and sport in ['mlb']:
+                    # Use the inning info for baseball (e.g., "Bottom 7th")
+                    game['time_remaining'] = status_detail
+                elif 'displayClock' in status and status['displayClock'] != '0:00':
+                    # Use clock for sports that have actual time (NBA, NFL, etc.)
                     game['time_remaining'] = status['displayClock']
+                else:
+                    game['time_remaining'] = None
             
             # Format date
             if game['date']:
@@ -237,36 +253,44 @@ class LiveSportsFetcher:
         return summary
     
     def should_check_for_live_games(self) -> bool:
-        """Determine if we should check for live games based on time of day.
+        """Determine if we should check for live games based on US Eastern Time.
         
-        Sports typically happen during certain hours (US times):
+        Sports typically happen during certain hours (US Eastern Time):
         - NFL: Sunday 1PM-11PM ET, Monday/Thursday 8PM-11PM ET
         - NBA/NHL: 7PM-11PM ET most nights
         - MLB: 7PM-11PM ET most nights, some day games
-        - College: Evenings and weekends
+        - College: Afternoons and evenings, weekends
         
         Returns:
             True if it's likely time for live sports, False otherwise
         """
-        now = datetime.now()
-        hour = now.hour
-        weekday = now.weekday()  # 0=Monday, 6=Sunday
+        # Convert UTC to US Eastern Time for proper sports scheduling
+        import pytz
+        utc_now = datetime.now(pytz.UTC)
+        eastern = pytz.timezone('US/Eastern')
+        et_now = utc_now.astimezone(eastern)
         
-        # Always check during prime sports hours (6 PM - midnight ET)
-        if 18 <= hour <= 23:
+        hour = et_now.hour
+        weekday = et_now.weekday()  # 0=Monday, 6=Sunday
+        
+        print(f"Current time: {et_now.strftime('%Y-%m-%d %I:%M %p %Z')} (Hour: {hour})")
+        
+        # Always check during prime sports hours (11 AM - 2 AM ET)
+        # This covers lunch games, afternoon games, evening games, and late night games
+        if 11 <= hour <= 23 or 0 <= hour <= 2:
+            print(f"✅ Within main sports hours (11 AM - 2 AM ET)")
             return True
         
-        # Always check during weekend afternoons (12 PM - 6 PM)
-        if weekday in [5, 6] and 12 <= hour <= 18:  # Saturday/Sunday
+        # Extended weekend hours for college sports (10 AM - 2 AM ET)
+        if weekday in [5, 6] and (10 <= hour <= 23 or 0 <= hour <= 2):  # Saturday/Sunday
+            print(f"✅ Within weekend sports hours (10 AM - 2 AM ET)")
             return True
         
-        # Check during weekday lunch hours for possible day games
-        if 11 <= hour <= 14:
-            return True
-        
-        # Skip late night/early morning hours when games are rare
-        if 0 <= hour <= 9:
+        # Skip very early morning hours when games are extremely rare (3 AM - 9 AM ET)
+        if 3 <= hour <= 9:
+            print(f"⏰ Skipping early morning hours (3 AM - 9 AM ET) - rare for live games")
             return False
         
-        # Default to checking during reasonable hours
+        # Default to checking (should rarely hit this case with the above ranges)
+        print(f"✅ Default check (outside specific hours but allowing)")
         return True 
