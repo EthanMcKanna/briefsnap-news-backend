@@ -12,6 +12,7 @@ class SportsStorage:
     SPORTS_GAMES_COLLECTION = 'sports_games'
     SPORTS_SUMMARIES_COLLECTION = 'sports_summaries'
     SPORTS_NEWS_SUMMARIES_COLLECTION = 'sports_news_summaries'
+    GAME_SUMMARIES_COLLECTION = 'game_summaries'
     
     @classmethod
     def store_games(cls, all_games: Dict[str, List[Dict]], summary: Dict) -> bool:
@@ -388,6 +389,9 @@ class SportsStorage:
                     batch.delete(doc.reference)
                 batch.commit()
                 print(f"Cleaned up {len(old_summaries)} old summaries")
+            
+            # Clean up old game summaries
+            cls.cleanup_old_game_summaries(days=30)
                 
         except Exception as e:
             print(f"Error during cleanup: {e}")
@@ -854,4 +858,166 @@ class SportsStorage:
             new_time = update_data.get('time_remaining') or 'No time'
             changes.append(f"time: {old_time} → {new_time}")
         
-        return changes 
+        return changes
+    
+    @classmethod
+    def store_game_summary(cls, summary_data: Dict) -> bool:
+        """Store a game summary in Firestore.
+        
+        Args:
+            summary_data: Dictionary containing game summary data
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        db = FirebaseStorage.get_db()
+        if not db:
+            print("No Firestore connection available")
+            return False
+        
+        try:
+            # Create unique document ID
+            game_id = summary_data.get('game_id')
+            summary_type = summary_data.get('summary_type')  # 'pre_game' or 'post_game'
+            timestamp = summary_data.get('generated_at', datetime.now(timezone.utc))
+            
+            doc_id = f"{game_id}_{summary_type}_{timestamp.strftime('%Y%m%d_%H%M%S')}"
+            doc_ref = db.collection(cls.GAME_SUMMARIES_COLLECTION).document(doc_id)
+            
+            # Add metadata
+            summary_data.update({
+                'doc_id': doc_id,
+                'stored_at': datetime.now(timezone.utc),
+            })
+            
+            doc_ref.set(summary_data)
+            print(f"Stored {summary_type} summary for game {game_id}")
+            return True
+            
+        except Exception as e:
+            print(f"Error storing game summary: {e}")
+            return False
+    
+    @classmethod
+    def has_game_summary(cls, game_id: str, summary_type: str) -> bool:
+        """Check if a game summary already exists.
+        
+        Args:
+            game_id: Game ID
+            summary_type: 'pre_game' or 'post_game'
+            
+        Returns:
+            True if summary exists, False otherwise
+        """
+        db = FirebaseStorage.get_db()
+        if not db:
+            print("No Firestore connection available")
+            return False
+        
+        try:
+            # Query for existing summaries
+            query = db.collection(cls.GAME_SUMMARIES_COLLECTION)\
+                .where('game_id', '==', game_id)\
+                .where('summary_type', '==', summary_type)\
+                .limit(1)
+            
+            docs = list(query.stream())
+            return len(docs) > 0
+            
+        except Exception as e:
+            print(f"Error checking existing game summary: {e}")
+            return False
+    
+    @classmethod
+    def get_game_summaries(cls, game_id: str) -> List[Dict]:
+        """Get all summaries for a specific game.
+        
+        Args:
+            game_id: Game ID
+            
+        Returns:
+            List of game summaries
+        """
+        db = FirebaseStorage.get_db()
+        if not db:
+            print("No Firestore connection available")
+            return []
+        
+        try:
+            query = db.collection(cls.GAME_SUMMARIES_COLLECTION)\
+                .where('game_id', '==', game_id)\
+                .order_by('generated_at')
+            
+            summaries = []
+            for doc in query.stream():
+                summary_data = doc.to_dict()
+                summaries.append(summary_data)
+            
+            return summaries
+            
+        except Exception as e:
+            print(f"Error fetching game summaries: {e}")
+            return []
+    
+    @classmethod
+    def get_recent_game_summaries(cls, hours: int = 24) -> List[Dict]:
+        """Get recently generated game summaries.
+        
+        Args:
+            hours: How many hours back to look
+            
+        Returns:
+            List of recent game summaries
+        """
+        db = FirebaseStorage.get_db()
+        if not db:
+            print("No Firestore connection available")
+            return []
+        
+        try:
+            cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
+            
+            query = db.collection(cls.GAME_SUMMARIES_COLLECTION)\
+                .where('generated_at', '>=', cutoff_time)\
+                .order_by('generated_at', direction=firestore.Query.DESCENDING)
+            
+            summaries = []
+            for doc in query.stream():
+                summary_data = doc.to_dict()
+                summaries.append(summary_data)
+            
+            return summaries
+            
+        except Exception as e:
+            print(f"Error fetching recent game summaries: {e}")
+            return []
+    
+    @classmethod
+    def cleanup_old_game_summaries(cls, days: int = 30):
+        """Clean up old game summaries.
+        
+        Args:
+            days: Delete summaries older than this many days
+        """
+        db = FirebaseStorage.get_db()
+        if not db:
+            return
+        
+        try:
+            cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
+            
+            # Clean up old game summaries
+            old_summaries_query = db.collection(cls.GAME_SUMMARIES_COLLECTION)\
+                .where('generated_at', '<', cutoff_date)\
+                .limit(100)  # Process in batches
+            
+            old_summaries = list(old_summaries_query.stream())
+            if old_summaries:
+                batch = db.batch()
+                for doc in old_summaries:
+                    batch.delete(doc.reference)
+                batch.commit()
+                print(f"Cleaned up {len(old_summaries)} old game summaries")
+                
+        except Exception as e:
+            print(f"Error cleaning up old game summaries: {e}") 

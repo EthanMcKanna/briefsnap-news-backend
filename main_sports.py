@@ -10,6 +10,7 @@ import pytz
 from newsaggregator.fetchers.sports_fetcher import SportsFetcher
 from newsaggregator.storage.sports_storage import SportsStorage
 from newsaggregator.processors.sports_news_summarizer import SportsNewsSummarizer
+from newsaggregator.processors.game_summary_processor import GameSummaryProcessor
 from newsaggregator.config.settings import DATA_DIR
 
 def main():
@@ -131,6 +132,35 @@ def main():
         
         if success:
             print("✅ Successfully stored sports data in Firebase")
+            
+            # Process game summaries after storing sports data
+            print("\n====== Processing Game Summaries ======")
+            game_summary_processor = GameSummaryProcessor()
+            summary_results = game_summary_processor.process_game_summaries()
+            
+            # Save game summary results
+            if summary_results['pre_game_generated'] > 0 or summary_results['post_game_generated'] > 0:
+                game_summaries_file = sports_data_dir / f'game_summaries_{timestamp}.json'
+                with open(game_summaries_file, 'w') as f:
+                    json.dump(summary_results, f, indent=2, default=str)
+                print(f"Saved game summaries to: {game_summaries_file}")
+            
+            # Display game summary results
+            if summary_results['pre_game_generated'] > 0 or summary_results['post_game_generated'] > 0:
+                print(f"\n====== Game Summary Results ======")
+                print(f"Pre-game summaries generated: {summary_results['pre_game_generated']}")
+                print(f"Post-game summaries generated: {summary_results['post_game_generated']}")
+                print(f"Pre-game summaries skipped (already exist): {summary_results['pre_game_skipped']}")
+                print(f"Post-game summaries skipped (already exist): {summary_results['post_game_skipped']}")
+                
+                if summary_results['errors']:
+                    print(f"Errors encountered: {len(summary_results['errors'])}")
+                    for error in summary_results['errors'][:3]:  # Show first 3 errors
+                        print(f"  - {error}")
+                    if len(summary_results['errors']) > 3:
+                        print(f"  ... and {len(summary_results['errors']) - 3} more errors")
+            else:
+                print("No new game summaries generated (all existing summaries up to date)")
             
             # Show live games
             live_games = SportsStorage.get_live_games()

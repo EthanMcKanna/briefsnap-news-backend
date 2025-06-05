@@ -79,7 +79,13 @@ python main_sports.py
 ```
 
 #### GitHub Actions
-The sports aggregator runs automatically every 30 minutes for live updates and score tracking.
+The sports aggregator runs automatically every hour during active times for live updates and score tracking.
+
+**New Feature**: The sports aggregator now includes **automatic game summaries** that generate:
+- **Pre-game summaries** for games happening within 24 hours
+- **Post-game summaries** for recently finished games
+- Uses Gemini Flash 2 Lite with Google Search for real-time analysis
+- Smart deduplication ensures summaries are only generated once per game
 
 Both systems can also be triggered manually through the GitHub Actions interface.
 
