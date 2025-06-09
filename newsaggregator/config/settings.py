@@ -57,6 +57,14 @@ FIRESTORE_ARTICLES_COLLECTION = 'articles'
 
 # Gemini API configuration
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+
+# NewsAPI.org configuration
+NEWSAPI_KEY = os.environ.get("NEWSAPI_KEY", "")
+
+# Article selection configuration
+USE_NEWSAPI_FOR_DISCOVERY = True  # Toggle to use NewsAPI.org for article discovery
+NEWSAPI_FALLBACK_TO_RSS = True   # Fall back to RSS if NewsAPI fails
+ARTICLE_QUALITY_THRESHOLD = 50   # Minimum quality score for articles
 GEMINI_API_KEY_2 = os.environ.get("GEMINI_API_KEY_2", "")  # Secondary API key for rate limit fallback
 GEMINI_BASE_DELAY = 1  # Base delay between Gemini API calls in seconds
 GEMINI_MAX_RETRIES = 5
@@ -89,6 +97,16 @@ IMAGE_OPTIMIZATION = {
     'max_file_size': 2 * 1024 * 1024,  # Maximum file size (2MB)
     'min_file_size': 1024,  # Minimum file size (1KB)
 }
+
+# NewsAPI.org quota management (Free tier: 100 requests/day)
+NEWSAPI_DAILY_QUOTA = 100        # Daily request limit
+NEWSAPI_CACHE_DURATION = 3600    # Cache articles for 1 hour (in seconds)
+NEWSAPI_PRIORITY_TOPICS = ['TOP_NEWS', 'TECHNOLOGY', 'BUSINESS']  # Priority topics for quota allocation
+NEWSAPI_MAX_REQUESTS_PER_TOPIC = 1  # Max requests per topic per run (reduced from 2)
+NEWSAPI_ENABLE_CACHING = True    # Enable aggressive caching
+NEWSAPI_QUOTA_BUFFER = 0.8       # Use only 80% of quota to leave buffer (80 requests/day)
+NEWSAPI_HEADLINES_CONTEXT = True # Use NewsAPI headlines to provide context for Gemini summary generation
+NEWSAPI_MIN_QUOTA_FOR_HEADLINES = 5  # Minimum quota required before fetching headlines context
 
 # Validate required environment variables
 missing_vars = []

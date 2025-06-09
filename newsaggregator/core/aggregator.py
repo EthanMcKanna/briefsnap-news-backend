@@ -7,10 +7,11 @@ from pathlib import Path
 
 from newsaggregator.config.settings import (
     RSS_FEEDS, REQUEST_DELAY,
-    COMBINED_DIR
+    COMBINED_DIR, USE_NEWSAPI_FOR_DISCOVERY
 )
 from newsaggregator.fetchers.rss_fetcher import RSSFetcher
 from newsaggregator.processors.article_processor import ArticleProcessor
+from newsaggregator.selectors.article_selector import ArticleSelector
 from newsaggregator.processors.gemini_processor import GeminiProcessor
 from newsaggregator.storage.file_storage import FileStorage
 from newsaggregator.storage.firebase_storage import FirebaseStorage
@@ -24,6 +25,7 @@ class NewsAggregator:
         self.rss_fetcher = RSSFetcher()
         self.article_processor = ArticleProcessor()
         self.gemini_processor = GeminiProcessor()
+        self.article_selector = ArticleSelector()
         
         # Register signal handlers
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -45,27 +47,79 @@ class NewsAggregator:
         self.running = False
     
     def process_feeds(self):
-        """Process feeds for all topics.
+        """Process feeds for all topics using enhanced article selection.
         
         Returns:
             Dictionary of new articles by topic
         """
         new_articles_by_topic = {}
         
-        for topic, feed_url in RSS_FEEDS.items():
-            print(f"\nChecking {topic} news feed...")
-            feed = self.rss_fetcher.fetch_feed(feed_url)
-            if not feed:
-                continue
-
-            new_articles_by_topic[topic] = []
-            entries = self.rss_fetcher.extract_entries(feed)
+        # Get quota-optimized topics to stay within free tier limits
+        if USE_NEWSAPI_FOR_DISCOVERY:
+            topics = self.article_selector.get_quota_optimized_topics()
+            print(f"🎯 Processing {len(topics)} quota-optimized topics: {topics}")
+        else:
+            topics = self.article_selector.get_available_topics()
+        
+        for topic in topics:
+            print(f"\nProcessing {topic} articles...")
             
-            for entry in entries:
+            if USE_NEWSAPI_FOR_DISCOVERY:
+                # Use enhanced article selection with NewsAPI.org + RSS
+                selected_articles = self.article_selector.select_best_articles_for_topic(topic)
+            else:
+                # Fallback to traditional RSS-only method
+                feed_url = RSS_FEEDS.get(topic)
+                if not feed_url:
+                    continue
+                    
+                print(f"Using RSS-only method for {topic}...")
+                feed = self.rss_fetcher.fetch_feed(feed_url)
+                if not feed:
+                    continue
+                    
+                entries = self.rss_fetcher.extract_entries(feed)
+                selected_articles = []
+                for entry in entries:
+                    selected_articles.append({
+                        'url': entry.get('url'),
+                        'title': entry.get('title'),
+                        'source': entry.get('source'),
+                        'date': entry.get('date'),
+                        'description': '',
+                        'source_type': 'rss'
+                    })
+            
+            # Process selected articles
+            new_articles_by_topic[topic] = []
+            processed_count = 0
+            
+            for article in selected_articles:
+                # Validate article quality
+                is_valid, issues = self.article_selector.validate_article_quality(article)
+                if not is_valid:
+                    print(f"Skipping invalid article: {', '.join(issues)}")
+                    continue
+                
+                # Convert to entry format for processing
+                entry = {
+                    'url': article.get('url'),
+                    'title': article.get('title'),
+                    'source': article.get('source'),
+                    'date': article.get('date')
+                }
+                
                 article_data, success = self.article_processor.process_article(entry, topic)
                 if success:
                     new_articles_by_topic[topic].append(article_data)
+                    processed_count += 1
+                
                 time.sleep(REQUEST_DELAY)
+            
+            # Generate source diversity report
+            if new_articles_by_topic[topic]:
+                diversity_report = self.article_selector.get_source_diversity_report(selected_articles)
+                print(f"Source diversity for {topic}: {dict(list(diversity_report.items())[:5])}")
         
         return new_articles_by_topic
     

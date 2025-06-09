@@ -7,7 +7,8 @@ from google.ai.generativelanguage_v1beta.types import content
 from newsaggregator.utils.retry import smart_retry_with_backoff, api_manager
 from newsaggregator.config.settings import (
     TOPIC_PROMPTS, DEFAULT_PROMPT,
-    BRIEF_GENERATION_CONFIG
+    BRIEF_GENERATION_CONFIG, NEWSAPI_KEY, USE_NEWSAPI_FOR_DISCOVERY,
+    NEWSAPI_HEADLINES_CONTEXT, NEWSAPI_MIN_QUOTA_FOR_HEADLINES
 )
 
 class GeminiProcessor:
@@ -19,6 +20,16 @@ class GeminiProcessor:
         self.chat_session = None
         self.brief_chat_session = None
         self.weekly_chat_session = None
+        
+        # Initialize NewsAPI fetcher for headlines context
+        self.newsapi_fetcher = None
+        if NEWSAPI_KEY and USE_NEWSAPI_FOR_DISCOVERY and NEWSAPI_HEADLINES_CONTEXT:
+            try:
+                from newsaggregator.fetchers.newsapi_fetcher import NewsAPIFetcher
+                self.newsapi_fetcher = NewsAPIFetcher(NEWSAPI_KEY)
+                print("📰 Headlines context enabled for Gemini summary generation")
+            except Exception as e:
+                print(f"Warning: Could not initialize NewsAPI for headlines context: {e}")
         
     def configure_gemini(self):
         """Configure the Gemini API client."""
@@ -103,6 +114,95 @@ class GeminiProcessor:
         self.brief_chat_session = model.start_chat()
         return self.brief_chat_session
     
+    def get_trending_headlines_context(self, topic):
+        """Get trending headlines from NewsAPI to provide context for summary generation.
+        
+        Args:
+            topic: The topic to get headlines for
+            
+        Returns:
+            String containing formatted headlines for context, or empty string if unavailable
+        """
+        if not self.newsapi_fetcher:
+            return ""
+        
+        # Only fetch headlines for priority topics to conserve quota
+        from newsaggregator.config.settings import NEWSAPI_PRIORITY_TOPICS
+        if topic not in NEWSAPI_PRIORITY_TOPICS:
+            print(f"Skipping headlines context for {topic} - not in priority topics")
+            return ""
+        
+        try:
+            # Map topics to NewsAPI categories for headlines
+            topic_mapping = {
+                'TOP_NEWS': {'category': 'general'},
+                'WORLD': {'category': None, 'query': 'world news'},
+                'BUSINESS': {'category': 'business'},
+                'TECHNOLOGY': {'category': 'technology'},
+                'SCIENCE': {'category': 'science'},
+                'HEALTH': {'category': 'health'},
+                'SPORTS': {'category': 'sports'},
+                'ENTERTAINMENT': {'category': 'entertainment'}
+            }
+            
+            topic_config = topic_mapping.get(topic, {'category': None})
+            headlines = []
+            
+            # Try to get headlines without consuming too much quota
+            # Check if we have quota available
+            quota_status = self.newsapi_fetcher.quota_manager.get_quota_status()
+            if quota_status['remaining'] < NEWSAPI_MIN_QUOTA_FOR_HEADLINES:
+                print(f"Skipping headlines context for {topic} - low quota ({quota_status['remaining']} remaining, need {NEWSAPI_MIN_QUOTA_FOR_HEADLINES})")
+                return ""
+            
+            if topic_config['category']:
+                # Use top headlines endpoint
+                articles = self.newsapi_fetcher.fetch_top_headlines(
+                    category=topic_config['category'],
+                    page_size=15,  # Get fewer headlines to save quota
+                    topic=f"{topic}_headlines"
+                )
+                headlines.extend([article.get('title', '') for article in articles if article.get('title')])
+            
+            elif topic_config.get('query'):
+                # Use everything endpoint with search
+                from datetime import datetime, timedelta
+                from_date = (datetime.now() - timedelta(hours=12)).strftime('%Y-%m-%d')
+                
+                articles = self.newsapi_fetcher.fetch_everything(
+                    query=topic_config['query'],
+                    from_date=from_date,
+                    sort_by='popularity',
+                    page_size=15,
+                    topic=f"{topic}_headlines"
+                )
+                headlines.extend([article.get('title', '') for article in articles if article.get('title')])
+            
+            if headlines:
+                # Remove duplicates and filter out very similar headlines
+                unique_headlines = []
+                for headline in headlines[:15]:  # Process more to filter better
+                    # Simple deduplication - avoid headlines that are too similar
+                    is_duplicate = False
+                    for existing in unique_headlines:
+                        # Check if headlines are very similar (same key words)
+                        common_words = set(headline.lower().split()) & set(existing.lower().split())
+                        if len(common_words) >= 3:  # If they share 3+ words, likely similar
+                            is_duplicate = True
+                            break
+                    if not is_duplicate:
+                        unique_headlines.append(headline)
+                
+                if unique_headlines:
+                    # Format headlines for context
+                    headlines_text = "\n".join([f"• {headline}" for headline in unique_headlines[:8]])  # Limit to top 8 unique
+                    return f"\n\nCURRENT TRENDING HEADLINES FOR CONTEXT:\n{headlines_text}\n"
+            
+        except Exception as e:
+            print(f"Warning: Could not fetch headlines context for {topic}: {e}")
+        
+        return ""
+    
     @smart_retry_with_backoff
     def generate_summary(self, content_text, topic='TOP_NEWS'):
         """Generate summary and top stories for a specific topic.
@@ -121,13 +221,30 @@ class GeminiProcessor:
         print(f"INFO: Generating summary for topic: {topic}")
         
         try:
+            # Get trending headlines for additional context
+            headlines_context = self.get_trending_headlines_context(topic)
+            
             # Get topic-specific prompt or fall back to default
             prompt_template = TOPIC_PROMPTS.get(topic, DEFAULT_PROMPT)
             
             # Escape any problematic characters in the content
             content_escaped = json.dumps(content_text)
             
-            prompt = f"""{prompt_template}
+            # Enhanced prompt with headlines context
+            if headlines_context:
+                prompt = f"""{prompt_template}
+
+            Use the current trending headlines below to help prioritize the most important and relevant stories. Focus on topics that align with what's currently trending and newsworthy.
+
+            {headlines_context}
+
+            Format your response as a JSON object with these exact field names.
+
+            News Articles: 
+            {content_escaped}"""
+                print(f"INFO: Including {len(headlines_context.split('•'))-1} trending headlines as context for {topic}")
+            else:
+                prompt = f"""{prompt_template}
 
             Format your response as a JSON object with these exact field names.
 
