@@ -133,43 +133,55 @@ class NewsAggregator:
         summaries = {}
         
         for topic in RSS_FEEDS.keys():
-            print(f"\nProcessing {topic}...")
-            
-            # Get the combined file path for this topic
-            combined_file = Path(COMBINED_DIR) / FileStorage.get_combined_filename(topic)
-            
-            if not combined_file.exists():
-                print(f"No combined file found for topic: {topic}")
+            try:
+                print(f"\nProcessing {topic}...")
+
+                # Get the combined file path for this topic
+                combined_file = Path(COMBINED_DIR) / FileStorage.get_combined_filename(topic)
+
+                if not combined_file.exists():
+                    print(f"No combined file found for topic: {topic}")
+                    continue
+
+                # Read the combined file content
+                with open(combined_file, 'r', encoding='utf-8') as f:
+                    content = f.read()
+
+                # Generate summary using Gemini
+                summary = self.gemini_processor.generate_summary(content, topic)
+
+                if summary:
+                    # Add detailed content to each story
+                    summary = self.article_processor.process_for_summary(summary)
+
+                    # Generate brief summary
+                    try:
+                        brief_data = self.gemini_processor.generate_brief_summary(
+                            summary.get('Summary', ''), topic
+                        )
+
+                        if brief_data:
+                            summary['brief_summary'] = brief_data.get('BriefSummary', '')
+                            summary['bullet_points'] = brief_data.get('BulletPoints', [])
+                    except Exception as e:
+                        print(f"[WARNING] Failed to generate brief summary for {topic} after all retries: {e}")
+                        print(f"[INFO] Continuing with full summary only")
+
+                    # Save summary to storage
+                    FileStorage.save_summary(summary, topic)
+
+                    # Upload to Firestore if available
+                    if self.db:
+                        FirebaseStorage.upload_to_firestore(summary, topic)
+
+                    summaries[topic] = summary
+                else:
+                    print(f"[WARNING] No summary generated for {topic}")
+
+            except Exception as e:
+                print(f"[ERROR] Failed to process summary for {topic} after all retries: {e}")
+                print(f"[INFO] Continuing with remaining topics")
                 continue
-                
-            # Read the combined file content
-            with open(combined_file, 'r', encoding='utf-8') as f:
-                content = f.read()
-                
-            # Generate summary using Gemini
-            summary = self.gemini_processor.generate_summary(content, topic)
-            
-            if summary:
-                # Add detailed content to each story
-                summary = self.article_processor.process_for_summary(summary)
-                
-                # Generate brief summary
-                brief_data = self.gemini_processor.generate_brief_summary(
-                    summary.get('Summary', ''), topic
-                )
-                
-                if brief_data:
-                    summary['brief_summary'] = brief_data.get('BriefSummary', '')
-                    summary['bullet_points'] = brief_data.get('BulletPoints', [])
-                
-                # Save summary to storage
-                FileStorage.save_summary(summary, topic)
-                
-                # Upload to Firestore if available
-                if self.db:
-                    FirebaseStorage.upload_to_firestore(summary, topic)
-                
-                summaries[topic] = summary
         
         return summaries
     
