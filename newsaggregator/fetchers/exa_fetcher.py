@@ -145,8 +145,14 @@ class ExaFetcher:
                 except Exception as search_error:
                     print(f"[ERROR] Broader search also failed: {search_error}")
             
-            # Select the best image from the candidates
-            best_image_url = ArticleFetcher.select_best_image(image_candidates)
+            # Remove duplicate citation URLs while preserving order
+            citations = list(dict.fromkeys(citations))
+
+            # Select the best image from the candidates, with fallbacks to article scraping
+            best_image_url = ArticleFetcher.select_best_image(
+                image_candidates,
+                fallback_urls=citations
+            )
             
             if not article_contents:
                 # Still no results, generate content with Gemini but without reference articles

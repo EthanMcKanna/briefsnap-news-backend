@@ -1,6 +1,9 @@
 """Article content fetcher for retrieving and parsing articles."""
 
+import re
 import time
+from urllib.parse import urlparse
+
 from newspaper import Article
 from bs4 import BeautifulSoup
 from googlenewsdecoder import new_decoderv1
@@ -224,7 +227,6 @@ class ArticleFetcher:
                 return True
         
         # Check if image is at a path typically used for logos
-        from urllib.parse import urlparse
         parsed_url = urlparse(image_url)
         path_parts = parsed_url.path.split('/')
         if len(path_parts) <= 3 and any(p in ['images', 'img', 'assets'] for p in path_parts):
@@ -233,27 +235,188 @@ class ArticleFetcher:
         return False
         
     @classmethod
-    def select_best_image(cls, image_urls):
-        """Select the best image from a list of URLs based on simple heuristics.
-        
+    def _is_valid_image_url(cls, image_url):
+        """Quick validation to ensure an image URL is worth considering."""
+        if not image_url:
+            return False
+
+        image_url = image_url.strip()
+        if not image_url or image_url.startswith('data:'):
+            return False
+
+        parsed = urlparse(image_url)
+        if not parsed.scheme:
+            # Some feeds return URLs like //example.com/image.jpg
+            image_url = f"https:{image_url}" if image_url.startswith('//') else image_url
+            parsed = urlparse(image_url)
+
+        if parsed.scheme not in ('http', 'https'):
+            return False
+
+        # Basic extension filtering
+        valid_extensions = {'.jpg', '.jpeg', '.png', '.webp', '.avif', '.gif'}
+        path = parsed.path.lower()
+        if '.' not in path:
+            return False
+        if not any(path.endswith(ext) for ext in valid_extensions):
+            return False
+
+        # Skip very short filenames that are commonly tracking pixels
+        filename = path.split('/')[-1]
+        if len(filename) <= 6:
+            return False
+
+        if cls.is_likely_logo(image_url):
+            return False
+
+        return True
+
+    @classmethod
+    def _score_image(cls, image_url):
+        """Generate a heuristic score for how suitable an image might be."""
+        score = 0
+        url_lower = image_url.lower()
+
+        positive_keywords = [
+            'featured', 'feature', 'hero', 'lead', 'main', 'promo',
+            'large', 'hd', 'wide', '1200', '1080', '2048', 'original',
+            'media', 'article', 'story', 'content', 'uploads'
+        ]
+        negative_keywords = [
+            'thumb', 'thumbnail', 'small', 'sm_', 'icon', 'placeholder',
+            'default', 'sprite', 'banner', 'header', 'social', 'share',
+            'avatar', 'profile', 'transparent', 'background', 'og-image',
+            'meta-logo', 'masthead', 'brand', 'badge'
+        ]
+
+        for keyword in positive_keywords:
+            if keyword in url_lower:
+                score += 3
+        for keyword in negative_keywords:
+            if keyword in url_lower:
+                score -= 4
+
+        # Prefer HTTPS and avoid GIFs where possible
+        if url_lower.startswith('https://'):
+            score += 2
+        if url_lower.endswith('.gif'):
+            score -= 3
+
+        # Reward likely high-resolution images based on dimensions in filename
+        dimension_match = re.search(r'(\d{3,4})[xX](\d{3,4})', url_lower)
+        if dimension_match:
+            width, height = map(int, dimension_match.groups())
+            if width >= 800 and height >= 500:
+                score += 4
+            elif width >= 600 and height >= 400:
+                score += 2
+
+        # Reward explicit width query parameters suggesting a large image
+        width_match = re.search(r'(?:width|w)=([0-9]{3,4})', url_lower)
+        if width_match and int(width_match.group(1)) >= 800:
+            score += 2
+
+        # Penalize URLs from known tracking hosts
+        tracking_hosts = ['doubleclick.net', 'googlesyndication.com']
+        host = urlparse(image_url).netloc.lower()
+        if any(host.endswith(th) for th in tracking_hosts):
+            score -= 6
+
+        return score
+
+    @classmethod
+    def _rank_images(cls, image_urls):
+        """Return candidate image URLs ordered by heuristic score."""
+        seen = set()
+        candidates = []
+
+        for url in image_urls or []:
+            if not url or url in seen:
+                continue
+
+            normalized_url = url.strip()
+            if normalized_url.startswith('//'):
+                normalized_url = f"https:{normalized_url}"
+
+            if not cls._is_valid_image_url(normalized_url):
+                continue
+
+            seen.add(normalized_url)
+            score = cls._score_image(normalized_url)
+            candidates.append((score, normalized_url))
+
+        # Sort by score descending then by URL to keep deterministic ordering
+        candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return [url for _, url in candidates]
+
+    @staticmethod
+    def _url_returns_image(image_url, timeout=10):
+        """Check whether fetching an image URL returns image content."""
+        try:
+            headers = get_headers()
+            response = requests.head(image_url, headers=headers, timeout=timeout, allow_redirects=True)
+            try:
+                if response.status_code in (403, 405) or 'content-type' not in response.headers:
+                    response.close()
+                    with requests.get(image_url, headers=headers, timeout=timeout, stream=True) as get_response:
+                        content_type = get_response.headers.get('content-type', '')
+                        if not content_type.startswith('image/'):
+                            return False
+
+                        content_length = get_response.headers.get('content-length')
+                        if content_length and int(content_length) < 5 * 1024:
+                            return False
+                        return True
+
+                content_type = response.headers.get('content-type', '')
+                if not content_type.startswith('image/'):
+                    return False
+
+                content_length = response.headers.get('content-length')
+                if content_length and int(content_length) < 5 * 1024:
+                    return False
+
+                return True
+            finally:
+                response.close()
+        except Exception:
+            return False
+
+    @classmethod
+    def select_best_image(cls, image_urls, fallback_urls=None, max_fallback_articles=3):
+        """Select the best image from a list of URLs with validation and fallbacks.
+
         Args:
-            image_urls: List of image URLs to choose from
-            
+            image_urls: Initial list of candidate image URLs
+            fallback_urls: Optional list of article URLs to scrape for additional images
+            max_fallback_articles: Number of fallback articles to inspect
+
         Returns:
-            URL of the best image, or None if no good images
+            URL of the best image, or None if no viable image is found
         """
-        if not image_urls:
-            return None
-            
-        # Filter out likely logos
-        content_images = [url for url in image_urls if not cls.is_likely_logo(url)]
-        
-        # If we have any non-logo images, use the first one
-        if content_images:
-            return content_images[0]
-            
-        # If all images are likely logos, use the first one anyway
-        if image_urls:
-            return image_urls[0]
-            
-        return None 
+        ranked_candidates = cls._rank_images(image_urls)
+
+        for url in ranked_candidates[:5]:
+            if cls._url_returns_image(url):
+                return url
+
+        # If validation failed for all ranked candidates, try fallbacks from article pages
+        if fallback_urls:
+            fallback_candidates = list(ranked_candidates)
+
+            for article_url in fallback_urls[:max_fallback_articles]:
+                fallback_images = cls.find_article_images(article_url)
+                fallback_candidates.extend(fallback_images)
+
+            # Re-rank with the new fallback images included
+            fallback_ranked = cls._rank_images(fallback_candidates)
+
+            for url in fallback_ranked[:5]:
+                if cls._url_returns_image(url):
+                    return url
+
+        # If nothing validated, fall back to the top-ranked candidate without validation
+        if ranked_candidates:
+            return ranked_candidates[0]
+
+        return None
