@@ -2,7 +2,8 @@
 
 import re
 import time
-from urllib.parse import urlparse
+from collections import OrderedDict
+from urllib.parse import parse_qs, urlparse
 
 from newspaper import Article
 from bs4 import BeautifulSoup
@@ -15,9 +16,52 @@ from newsaggregator.utils.http import get_headers
 
 class ArticleFetcher:
     """Class for fetching and extracting article content."""
-    
-    @staticmethod
-    def extract_real_url_from_google(google_url):
+
+    _article_html_cache = OrderedDict()
+    _image_validation_cache = OrderedDict()
+    _session = requests.Session()
+    _MAX_ARTICLE_CACHE = 128
+    _MAX_IMAGE_CACHE = 256
+
+    @classmethod
+    def _cache_article_html(cls, url, html):
+        if not url or not html:
+            return
+
+        cache = cls._article_html_cache
+        if url in cache:
+            cache.move_to_end(url)
+        cache[url] = html
+
+        if len(cache) > cls._MAX_ARTICLE_CACHE:
+            cache.popitem(last=False)
+
+    @classmethod
+    def _get_cached_article_html(cls, url):
+        if url in cls._article_html_cache:
+            cls._article_html_cache.move_to_end(url)
+            return cls._article_html_cache[url]
+        return None
+
+    @classmethod
+    def _cache_image_validation_result(cls, image_url, result):
+        cache = cls._image_validation_cache
+        if image_url in cache:
+            cache.move_to_end(image_url)
+        cache[image_url] = result
+
+        if len(cache) > cls._MAX_IMAGE_CACHE:
+            cache.popitem(last=False)
+
+    @classmethod
+    def _get_cached_image_validation_result(cls, image_url):
+        if image_url in cls._image_validation_cache:
+            cls._image_validation_cache.move_to_end(image_url)
+            return cls._image_validation_cache[image_url]
+        return None
+
+    @classmethod
+    def extract_real_url_from_google(cls, google_url):
         """Extract the actual article URL from a Google News URL.
         
         Args:
@@ -28,7 +72,16 @@ class ArticleFetcher:
         """
         try:
             if 'news.google.com' in google_url:
-                decoded_url = new_decoderv1(google_url, interval=1)  # 1 second interval
+                parsed = urlparse(google_url)
+                query_params = parse_qs(parsed.query)
+
+                candidate = query_params.get('url', [])
+                if candidate:
+                    real_url = candidate[0]
+                    if real_url:
+                        return real_url
+
+                decoded_url = new_decoderv1(google_url, interval=0)
                 if decoded_url.get("status"):
                     return decoded_url["decoded_url"]
                 print(f"Failed to decode Google News URL: {decoded_url.get('message', 'Unknown error')}")
@@ -75,14 +128,15 @@ class ArticleFetcher:
         archive_url = f"https://archive.ph/{url}"
         
         # Step 1: Open the archive page
-        response = requests.get(archive_url, headers=get_headers())
-        if response.status_code != 200:
-            print(f"Failed to retrieve archive page. Status code: {response.status_code}")
-            return None
+        headers = get_headers()
+        with cls._session.get(archive_url, headers=headers) as response:
+            if response.status_code != 200:
+                print(f"Failed to retrieve archive page. Status code: {response.status_code}")
+                return None
 
-        # Step 2: Parse the page to find the top search result link
-        soup = BeautifulSoup(response.content, 'html.parser')
-        
+            # Step 2: Parse the page to find the top search result link
+            soup = BeautifulSoup(response.content, 'html.parser')
+
         # Locate the link within the 'TEXT-BLOCK' div
         text_block = soup.find("div", class_="TEXT-BLOCK")
         if not text_block:
@@ -99,20 +153,25 @@ class ArticleFetcher:
         print(f"Top result URL found: {top_result_url}")
         
         # Step 3: Open the top result link to retrieve the archived content
-        archived_content_response = requests.get(top_result_url, headers=get_headers())
-        if archived_content_response.status_code != 200:
-            print(f"Failed to retrieve the top result page. Status code: {archived_content_response.status_code}")
-            return None
+        with cls._session.get(top_result_url, headers=headers) as archived_content_response:
+            if archived_content_response.status_code != 200:
+                print(f"Failed to retrieve the top result page. Status code: {archived_content_response.status_code}")
+                return None
+
+            archived_html = archived_content_response.text
         
         # Use Newspaper3k to parse the archived content
         article = Article(top_result_url)
-        article.download()
+        article.download(input_html=archived_html)
         article.parse()
-        
+
         if not article.text:
             print("No article text found using Newspaper3k.")
             return None
-        
+
+        cls._cache_article_html(url, archived_html)
+        cls._cache_article_html(top_result_url, archived_html)
+
         return {'text': article.text, 'date': date}
 
     @classmethod
@@ -144,10 +203,17 @@ class ArticleFetcher:
             article = Article(url)
             article.config.request_timeout = REQUEST_TIMEOUT
             article.config.browser_user_agent = get_headers()['User-Agent']
-            article.download()
-            
+
+            cached_html = cls._get_cached_article_html(url)
+            if cached_html:
+                article.download(input_html=cached_html)
+            else:
+                article.download()
+
             if article.download_state == 2:  # ArticleDownloadState.SUCCESS
                 article.parse()
+                if article.html:
+                    cls._cache_article_html(url, article.html)
                 
                 content = article.text
                 publish_date = article.publish_date
@@ -169,8 +235,8 @@ class ArticleFetcher:
             print(f"Failed to scrape {url}: {e}")
             return None, None
     
-    @staticmethod
-    def find_article_images(url):
+    @classmethod
+    def find_article_images(cls, url):
         """Extract all images from article URL sorted by importance.
         
         Args:
@@ -181,8 +247,15 @@ class ArticleFetcher:
         """
         try:
             article = Article(url)
-            article.download()
+
+            cached_html = cls._get_cached_article_html(url)
+            if cached_html:
+                article.download(input_html=cached_html)
+            else:
+                article.download()
             article.parse()
+            if article.html:
+                cls._cache_article_html(url, article.html)
             
             images = []
             
@@ -349,38 +422,38 @@ class ArticleFetcher:
         candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
         return [url for _, url in candidates]
 
-    @staticmethod
-    def _url_returns_image(image_url, timeout=10):
+    @classmethod
+    def _url_returns_image(cls, image_url, timeout=10):
         """Check whether fetching an image URL returns image content."""
+        cached = cls._get_cached_image_validation_result(image_url)
+        if cached is not None:
+            return cached
+
+        result = False
         try:
             headers = get_headers()
-            response = requests.head(image_url, headers=headers, timeout=timeout, allow_redirects=True)
+            response = cls._session.head(image_url, headers=headers, timeout=timeout, allow_redirects=True)
             try:
                 if response.status_code in (403, 405) or 'content-type' not in response.headers:
-                    response.close()
-                    with requests.get(image_url, headers=headers, timeout=timeout, stream=True) as get_response:
+                    with cls._session.get(image_url, headers=headers, timeout=timeout, stream=True) as get_response:
                         content_type = get_response.headers.get('content-type', '')
-                        if not content_type.startswith('image/'):
-                            return False
-
-                        content_length = get_response.headers.get('content-length')
-                        if content_length and int(content_length) < 5 * 1024:
-                            return False
-                        return True
-
-                content_type = response.headers.get('content-type', '')
-                if not content_type.startswith('image/'):
-                    return False
-
-                content_length = response.headers.get('content-length')
-                if content_length and int(content_length) < 5 * 1024:
-                    return False
-
-                return True
+                        if content_type.startswith('image/'):
+                            content_length = get_response.headers.get('content-length')
+                            if not content_length or int(content_length) >= 5 * 1024:
+                                result = True
+                else:
+                    content_type = response.headers.get('content-type', '')
+                    if content_type.startswith('image/'):
+                        content_length = response.headers.get('content-length')
+                        if not content_length or int(content_length) >= 5 * 1024:
+                            result = True
             finally:
                 response.close()
         except Exception:
-            return False
+            result = False
+
+        cls._cache_image_validation_result(image_url, result)
+        return result
 
     @classmethod
     def select_best_image(cls, image_urls, fallback_urls=None, max_fallback_articles=3):

@@ -202,9 +202,6 @@ class NewsAggregator:
                 if articles:
                     print(f"- {topic}: {len(articles)} articles")
             
-            # Save processor state
-            self.article_processor.save_state()
-            
             # Generate summaries for each topic
             summaries = self.generate_summaries()
             FileStorage.save_last_summary_time(time.time())

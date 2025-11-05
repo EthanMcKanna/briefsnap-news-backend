@@ -26,6 +26,7 @@ class NewsAPIFetcher:
         self.source_rankings = self._get_source_rankings()
         self.quota_manager = NewsAPIQuotaManager()
         self.cache = ArticleCache()
+        self._last_request_used_network = False
         
         # Clean up expired cache on initialization
         self.cache.clear_expired_cache()
@@ -158,6 +159,8 @@ class NewsAPIFetcher:
         Returns:
             List of normalized article dictionaries
         """
+        self._last_request_used_network = False
+
         # Check cache first
         cache_params = {'category': category, 'country': country, 'sources': sources}
         cached_articles = self.cache.get_cached_articles(topic or 'headlines', 'headlines', cache_params)
@@ -181,6 +184,7 @@ class NewsAPIFetcher:
             
             # Record the request
             self.quota_manager.record_request(topic, 'headlines')
+            self._last_request_used_network = True
             
             if response['status'] == 'ok':
                 articles = self._normalize_articles(response['articles'])
@@ -221,6 +225,8 @@ class NewsAPIFetcher:
         Returns:
             List of normalized article dictionaries
         """
+        self._last_request_used_network = False
+
         # Check cache first
         cache_params = {
             'query': query, 'sources': sources, 'domains': domains,
@@ -250,6 +256,7 @@ class NewsAPIFetcher:
             
             # Record the request
             self.quota_manager.record_request(topic, 'everything')
+            self._last_request_used_network = True
             
             if response['status'] == 'ok':
                 articles = self._normalize_articles(response['articles'])
@@ -355,7 +362,8 @@ class NewsAPIFetcher:
                 )
                 all_articles.extend(headlines)
                 requests_made += 1
-                time.sleep(REQUEST_DELAY)
+                if self._last_request_used_network:
+                    time.sleep(REQUEST_DELAY)
             
             # Fetch from everything endpoint with search query
             if topic_config['query'] and requests_made < max_requests_for_topic:
@@ -371,7 +379,8 @@ class NewsAPIFetcher:
                 )
                 all_articles.extend(everything_articles)
                 requests_made += 1
-                time.sleep(REQUEST_DELAY)
+                if self._last_request_used_network:
+                    time.sleep(REQUEST_DELAY)
         
         else:
             # Limited requests - choose the best endpoint for this topic
@@ -384,6 +393,8 @@ class NewsAPIFetcher:
                 )
                 all_articles.extend(headlines)
                 requests_made += 1
+                if self._last_request_used_network:
+                    time.sleep(REQUEST_DELAY)
             elif topic_config['query']:
                 # Use everything endpoint for topics without specific categories
                 from_date = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
@@ -396,6 +407,8 @@ class NewsAPIFetcher:
                 )
                 all_articles.extend(everything_articles)
                 requests_made += 1
+                if self._last_request_used_network:
+                    time.sleep(REQUEST_DELAY)
         
         if not all_articles:
             print(f"No articles retrieved for {topic}")

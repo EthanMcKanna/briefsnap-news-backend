@@ -1,6 +1,7 @@
 """Firebase/Firestore storage for news articles and summaries."""
 
 import re
+import time
 import uuid
 from datetime import datetime, timezone, timedelta
 import firebase_admin
@@ -21,6 +22,10 @@ class FirebaseStorage:
     
     # Constants for collection names
     WEEKLY_SUMMARIES_COLLECTION = 'weekly_summaries'
+    _recent_articles_cache = []
+    _recent_articles_cache_cutoff = None
+    _recent_articles_cache_fetched_at = 0
+    _RECENT_CACHE_TTL = 300  # seconds
     
     @classmethod
     def initialize(cls):
@@ -58,6 +63,68 @@ class FirebaseStorage:
         if not cls._initialized:
             return cls.initialize()
         return cls._db
+
+    @classmethod
+    def _invalidate_recent_articles_cache(cls):
+        cls._recent_articles_cache = []
+        cls._recent_articles_cache_cutoff = None
+        cls._recent_articles_cache_fetched_at = 0
+
+    @classmethod
+    def _load_recent_articles(cls, db, time_threshold):
+        """Load recent articles once and reuse for duplicate checks."""
+        now = time.time()
+        if (cls._recent_articles_cache and cls._recent_articles_cache_cutoff is not None
+                and time_threshold >= cls._recent_articles_cache_cutoff
+                and now - cls._recent_articles_cache_fetched_at < cls._RECENT_CACHE_TTL):
+            return cls._recent_articles_cache
+
+        try:
+            recent_articles = db.collection(FIRESTORE_ARTICLES_COLLECTION) \
+                .where('timestamp', '>=', time_threshold) \
+                .stream()
+
+            cached = []
+            for article in recent_articles:
+                article_data = article.to_dict()
+                title_raw = article_data.get('title', '')
+                desc_raw = article_data.get('description', '')
+                timestamp_value = article_data.get('timestamp')
+                if timestamp_value and timestamp_value.tzinfo is None:
+                    timestamp_value = timestamp_value.replace(tzinfo=timezone.utc)
+
+                cached.append({
+                    'title': title_raw,
+                    'description': desc_raw,
+                    'title_clean': clean_text_for_comparison(title_raw),
+                    'description_clean': clean_text_for_comparison(desc_raw),
+                    'timestamp': timestamp_value
+                })
+
+            cls._recent_articles_cache = cached
+            cls._recent_articles_cache_cutoff = time_threshold
+            cls._recent_articles_cache_fetched_at = now
+            return cached
+        except Exception as e:
+            print(f"Error loading recent articles for duplicate detection: {e}")
+            return cls._recent_articles_cache or []
+
+    @classmethod
+    def _add_to_recent_articles_cache(cls, clean_title, clean_desc, raw_title, raw_desc, timestamp):
+        if timestamp is None:
+            timestamp = datetime.now(timezone.utc)
+
+        cls._recent_articles_cache.append({
+            'title': raw_title,
+            'description': raw_desc,
+            'title_clean': clean_title,
+            'description_clean': clean_desc,
+            'timestamp': timestamp
+        })
+
+        if cls._recent_articles_cache_cutoff is None or timestamp < cls._recent_articles_cache_cutoff:
+            cls._recent_articles_cache_cutoff = timestamp
+        cls._recent_articles_cache_fetched_at = time.time()
     
     @staticmethod
     def generate_story_id():
@@ -107,20 +174,19 @@ class FirebaseStorage:
                 return False
 
             time_threshold = datetime.now(timezone.utc) - timedelta(seconds=LOOKBACK_PERIOD)
-            recent_articles = db.collection(FIRESTORE_ARTICLES_COLLECTION)\
-                .where('timestamp', '>=', time_threshold)\
-                .stream()
+            recent_articles = cls._load_recent_articles(db, time_threshold)
 
             # Clean and normalize the new article text
             clean_new_title = clean_text_for_comparison(story_title)
             clean_new_desc = clean_text_for_comparison(story_description)
 
             for article in recent_articles:
-                article_data = article.to_dict()
-                
-                # Clean and normalize existing article text
-                clean_existing_title = clean_text_for_comparison(article_data.get('title', ''))
-                clean_existing_desc = clean_text_for_comparison(article_data.get('description', ''))
+                article_timestamp = article.get('timestamp')
+                if article_timestamp and article_timestamp < time_threshold:
+                    continue
+
+                clean_existing_title = article.get('title_clean', '')
+                clean_existing_desc = article.get('description_clean', '')
 
                 # Calculate various similarity scores
                 title_similarity = calculate_similarity(clean_new_title, clean_existing_title)
@@ -150,6 +216,15 @@ class FirebaseStorage:
                     clean_existing_title in clean_new_title):
                     print(f"Title substring match found: {story_title}")
                     return True
+
+            # No duplicate found; add to cache so subsequent checks in this run can reuse it
+            cls._add_to_recent_articles_cache(
+                clean_new_title,
+                clean_new_desc,
+                story_title,
+                story_description,
+                datetime.now(timezone.utc)
+            )
 
             return False
             
@@ -317,6 +392,7 @@ class FirebaseStorage:
                 )
 
             print(f"Successfully uploaded {topic} summary and unique articles to Firestore")
+            cls._invalidate_recent_articles_cache()
             return True
         except Exception as e:
             print(f"Failed to upload to Firestore: {e}")
