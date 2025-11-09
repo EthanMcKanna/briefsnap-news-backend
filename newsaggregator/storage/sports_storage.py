@@ -1,9 +1,10 @@
 """Firebase storage for sports data."""
 
 from datetime import datetime, timezone, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 from firebase_admin import firestore
 from newsaggregator.storage.firebase_storage import FirebaseStorage
+from newsaggregator.config.settings import FIRESTORE_BATCH_WRITE_LIMIT
 
 class SportsStorage:
     """Class for managing sports data in Firebase/Firestore."""
@@ -32,66 +33,71 @@ class SportsStorage:
         
         try:
             timestamp = datetime.now(timezone.utc)
-            
-            # Store individual games with update detection
             games_stored = 0
             games_updated = 0
-            
+
+            batch = db.batch()
+            writes_in_batch = 0
+
+            def flush_batch(force=False):
+                nonlocal batch, writes_in_batch
+                if writes_in_batch == 0:
+                    return
+                if force or writes_in_batch >= FIRESTORE_BATCH_WRITE_LIMIT:
+                    batch.commit()
+                    batch = db.batch()
+                    writes_in_batch = 0
+
             for sport, games in all_games.items():
+                doc_ids = [f"{sport}_{game['id']}" for game in games if game.get('id')]
+                existing_games = cls._get_existing_games(db, doc_ids)
+
                 for game in games:
                     if not game.get('id'):
                         continue
-                    
-                    # Create document with composite key
+
                     doc_id = f"{sport}_{game['id']}"
                     doc_ref = db.collection(cls.SPORTS_GAMES_COLLECTION).document(doc_id)
-                    
-                    # Check if game already exists
-                    existing_doc = doc_ref.get()
-                    
-                    # Prepare game data
+
                     game_data = game.copy()
                     game_data.update({
                         'last_updated': timestamp,
                         'doc_id': doc_id,
                     })
-                    
-                    if existing_doc.exists:
-                        # Game exists, check if we need to update
-                        existing_data = existing_doc.to_dict()
-                        
-                        # Check for significant changes
-                        needs_update = cls._needs_update(existing_data, game_data)
-                        
-                        if needs_update:
-                            # Preserve original creation time
-                            if 'first_seen' in existing_data:
-                                game_data['first_seen'] = existing_data['first_seen']
-                            
-                            # Track update count
-                            game_data['update_count'] = existing_data.get('update_count', 0) + 1
-                            
-                            # Store what changed
-                            changes = cls._detect_changes(existing_data, game_data)
-                            if changes:
-                                game_data['last_changes'] = changes
-                            
-                            doc_ref.set(game_data, merge=True)
-                            games_updated += 1
-                            
-                            if changes:
-                                print(f"Updated {sport.upper()} game {game.get('away_team', {}).get('abbreviation', 'TBD')} @ {game.get('home_team', {}).get('abbreviation', 'TBD')}: {', '.join(changes)}")
+
+                    existing_data = existing_games.get(doc_id)
+                    if existing_data:
+                        if not cls._needs_update(existing_data, game_data):
+                            continue
+
+                        if 'first_seen' in existing_data:
+                            game_data['first_seen'] = existing_data['first_seen']
+
+                        game_data['update_count'] = existing_data.get('update_count', 0) + 1
+                        changes = cls._detect_changes(existing_data, game_data)
+                        if changes:
+                            game_data['last_changes'] = changes
+
+                        batch.set(doc_ref, game_data, merge=True)
+                        games_updated += 1
+
+                        if changes:
+                            print(
+                                f"Updated {sport.upper()} game {game.get('away_team', {}).get('abbreviation', 'TBD')} @ "
+                                f"{game.get('home_team', {}).get('abbreviation', 'TBD')}: {', '.join(changes)}"
+                            )
                     else:
-                        # New game
                         game_data['first_seen'] = timestamp
                         game_data['update_count'] = 0
-                        doc_ref.set(game_data)
+                        batch.set(doc_ref, game_data)
                         games_stored += 1
-            
-            # Store summary
+
+                    writes_in_batch += 1
+                    flush_batch()
+
             summary_doc_id = timestamp.strftime('%Y%m%d_%H%M%S')
             summary_ref = db.collection(cls.SPORTS_SUMMARIES_COLLECTION).document(summary_doc_id)
-            
+
             summary_data = summary.copy()
             summary_data.update({
                 'timestamp': timestamp,
@@ -99,17 +105,18 @@ class SportsStorage:
                 'games_stored': games_stored,
                 'games_updated': games_updated,
             })
-            
-            summary_ref.set(summary_data)
-            
+
+            batch.set(summary_ref, summary_data)
+            writes_in_batch += 1
+            flush_batch(force=True)
+
             print(f"Successfully processed games: {games_stored} new, {games_updated} updated")
-            
-            # Clean up old data less frequently (only every 6 hours)
+
             if timestamp.hour % 6 == 0 and timestamp.minute < 30:
                 cls._cleanup_old_data()
-            
+
             return True
-            
+
         except Exception as e:
             print(f"Error storing sports data in Firestore: {e}")
             return False
@@ -927,6 +934,51 @@ class SportsStorage:
         except Exception as e:
             print(f"Error checking existing game summary: {e}")
             return False
+
+    @classmethod
+    def _get_existing_games(cls, db, doc_ids: List[str]) -> Dict[str, Dict]:
+        """Fetch existing game documents in batches to minimize round-trips."""
+        existing: Dict[str, Dict] = {}
+        if not doc_ids:
+            return existing
+
+        chunk_size = 400
+        for i in range(0, len(doc_ids), chunk_size):
+            chunk = doc_ids[i:i + chunk_size]
+            refs = [db.collection(cls.SPORTS_GAMES_COLLECTION).document(doc_id) for doc_id in chunk]
+            for doc in db.get_all(refs):
+                if doc.exists:
+                    existing[doc.id] = doc.to_dict()
+
+        return existing
+
+    @classmethod
+    def get_summary_index(cls, game_ids: List[str]) -> Dict[str, Set[str]]:
+        """Preload summary types for a set of game IDs."""
+        db = FirebaseStorage.get_db()
+        if not db or not game_ids:
+            return {}
+
+        index: Dict[str, Set[str]] = {}
+        chunk_size = 10
+
+        try:
+            for i in range(0, len(game_ids), chunk_size):
+                chunk = game_ids[i:i + chunk_size]
+                query = db.collection(cls.GAME_SUMMARIES_COLLECTION)\
+                    .where('game_id', 'in', chunk)
+
+                for doc in query.stream():
+                    data = doc.to_dict()
+                    game_id = data.get('game_id')
+                    summary_type = data.get('summary_type')
+                    if not game_id or not summary_type:
+                        continue
+                    index.setdefault(game_id, set()).add(summary_type)
+        except Exception as e:
+            print(f"Error building summary index: {e}")
+
+        return index
     
     @classmethod
     def get_game_summaries(cls, game_id: str) -> List[Dict]:

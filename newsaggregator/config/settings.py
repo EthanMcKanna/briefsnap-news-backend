@@ -34,6 +34,7 @@ LAST_SUMMARY_FILE = DATA_DIR / 'last_summary_time.txt'
 # Fetch configuration
 ARTICLES_PER_FEED = 20
 REQUEST_DELAY = 1  # seconds
+MAX_CONCURRENT_ARTICLE_FETCHES = int(os.environ.get("MAX_CONCURRENT_ARTICLE_FETCHES", 4))
 REQUEST_TIMEOUT = 10  # seconds
 MIN_ARTICLE_LENGTH = 200  # characters
 USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
@@ -54,6 +55,7 @@ LOOKBACK_PERIOD = 24 * 60 * 60  # 24 hour lookback
 FIREBASE_CREDS_PATH = BASE_DIR / 'firebase-credentials.json'
 FIRESTORE_COLLECTION = 'news_summaries'
 FIRESTORE_ARTICLES_COLLECTION = 'articles'
+FIRESTORE_BATCH_WRITE_LIMIT = int(os.environ.get("FIRESTORE_BATCH_WRITE_LIMIT", 450))
 
 # Gemini API configuration
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
@@ -70,6 +72,8 @@ GEMINI_BASE_DELAY = 1  # Base delay between Gemini API calls in seconds
 GEMINI_MAX_RETRIES = 5
 GEMINI_MAX_DELAY = 120  # Maximum delay between retries in seconds (increased for rate limits)
 GEMINI_RATE_LIMIT_DELAY = 60  # Default delay for rate limit errors in seconds
+SUMMARY_CHUNK_MAX_CHARS = int(os.environ.get("SUMMARY_CHUNK_MAX_CHARS", 12000))
+SUMMARY_ENRICHMENT_WORKERS = int(os.environ.get("SUMMARY_ENRICHMENT_WORKERS", 4))
 
 # Exa API configuration
 EXA_API_KEY = os.environ.get("EXA_API_KEY", "")
@@ -83,6 +87,10 @@ R2_SECRET_ACCESS_KEY = os.environ.get("R2_SECRET_ACCESS_KEY", "")
 R2_BUCKET_NAME = "briefsnap-images"
 R2_CUSTOM_DOMAIN = "images.briefsnap.com"
 R2_ENDPOINT_URL = f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+
+# Sports performance tuning
+MAX_SPORT_FETCH_WORKERS = int(os.environ.get("MAX_SPORT_FETCH_WORKERS", 4))
+SPORTS_NEWS_SUMMARY_CONCURRENCY = int(os.environ.get("SPORTS_NEWS_SUMMARY_CONCURRENCY", 3))
 
 # Image optimization configuration
 IMAGE_OPTIMIZATION = {

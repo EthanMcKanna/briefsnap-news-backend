@@ -8,8 +8,10 @@ from newsaggregator.utils.retry import smart_retry_with_backoff, api_manager
 from newsaggregator.config.settings import (
     TOPIC_PROMPTS, DEFAULT_PROMPT,
     BRIEF_GENERATION_CONFIG, NEWSAPI_KEY, USE_NEWSAPI_FOR_DISCOVERY,
-    NEWSAPI_HEADLINES_CONTEXT, NEWSAPI_MIN_QUOTA_FOR_HEADLINES
+    NEWSAPI_HEADLINES_CONTEXT, NEWSAPI_MIN_QUOTA_FOR_HEADLINES,
+    SUMMARY_CHUNK_MAX_CHARS
 )
+from newsaggregator.utils.chunking import chunk_text
 
 class GeminiProcessor:
     """Class for processing news data with Google's Gemini API."""
@@ -259,6 +261,42 @@ class GeminiProcessor:
 
         # Parse the response
         return json.loads(response.text)
+
+    def generate_chunked_summary(self, content_text, topic='TOP_NEWS'):
+        """Summarize large content blobs by chunking into manageable pieces."""
+        chunks = chunk_text(content_text, SUMMARY_CHUNK_MAX_CHARS)
+        if not chunks:
+            return None
+
+        if len(chunks) == 1:
+            return self.generate_summary(chunks[0], topic)
+
+        chunk_summaries = []
+        for idx, chunk in enumerate(chunks, start=1):
+            print(f"[INFO] Summarizing chunk {idx}/{len(chunks)} for {topic}")
+            result = self.generate_summary(chunk, topic)
+            if result:
+                chunk_summaries.append(result)
+
+        if not chunk_summaries:
+            print(f"[WARNING] Failed to summarize chunks for {topic}")
+            return None
+
+        combined_parts = []
+        for idx, chunk_summary in enumerate(chunk_summaries, start=1):
+            combined_parts.append(f"Chunk {idx} Summary:\n{chunk_summary.get('Summary', '')}")
+            for story in chunk_summary.get('Stories', []):
+                combined_parts.append(
+                    f"StoryTitle: {story.get('StoryTitle', '')}\nStoryDescription: {story.get('StoryDescription', '')}"
+                )
+
+        combined_input = "\n\n".join(part for part in combined_parts if part)
+        final_summary = self.generate_summary(combined_input, topic)
+        if final_summary:
+            merged_stories = self._merge_story_lists(final_summary.get('Stories', []), chunk_summaries)
+            final_summary['Stories'] = merged_stories
+
+        return final_summary
     
     @smart_retry_with_backoff
     def generate_brief_summary(self, summary_text, topic):
@@ -287,6 +325,36 @@ class GeminiProcessor:
 
         response = brief_chat.send_message(prompt)
         return json.loads(response.text)
+
+    def _merge_story_lists(self, primary_stories, chunk_summaries, limit=10):
+        """Merge stories from chunk outputs while preserving uniqueness."""
+        merged = []
+        seen = set()
+
+        def add_story(story):
+            if not story:
+                return
+            title = (story.get('StoryTitle') or '').strip()
+            if not title:
+                return
+            key = title.lower()
+            if key in seen:
+                return
+            seen.add(key)
+            merged.append(story)
+
+        for story in primary_stories or []:
+            add_story(story)
+            if len(merged) >= limit:
+                return merged[:limit]
+
+        for summary in chunk_summaries:
+            for story in summary.get('Stories', []):
+                add_story(story)
+                if len(merged) >= limit:
+                    return merged[:limit]
+
+        return merged[:limit]
     
     @smart_retry_with_backoff
     def generate_weekly_summary(self, content_text, topic):

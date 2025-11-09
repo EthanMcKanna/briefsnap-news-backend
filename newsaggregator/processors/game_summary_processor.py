@@ -17,6 +17,7 @@ class GameSummaryProcessor:
             api_key=os.environ.get("GEMINI_API_KEY"),
         )
         self.model = "gemini-2.0-flash-lite"
+        self.summary_index = {}
         
     def get_games_within_24_hours(self) -> List[Dict]:
         """Get all games happening within the next 24 hours.
@@ -296,11 +297,21 @@ Format your response as:
         
         print("\n====== Processing Game Summaries ======")
         
-        # Process pre-game summaries for upcoming games
         print("Checking for upcoming games within 24 hours...")
         upcoming_games = self.get_games_within_24_hours()
         print(f"Found {len(upcoming_games)} games within 24 hours")
-        
+
+        print("Checking for recently finished games...")
+        finished_games = self.get_recently_finished_games(hours_back=4)
+        print(f"Found {len(finished_games)} recently finished games")
+
+        game_ids = {
+            game.get('id')
+            for game in [*upcoming_games, *finished_games]
+            if game.get('id')
+        }
+        self.summary_index = SportsStorage.get_summary_index(list(game_ids))
+
         for game in upcoming_games:
             try:
                 # Check if pre-game summary already exists
@@ -319,6 +330,7 @@ Format your response as:
                     if SportsStorage.store_game_summary(summary):
                         results['pre_game_summaries'].append(summary)
                         results['pre_game_generated'] += 1
+                        self._mark_summary_generated(game, 'pre_game')
                         print(f"✅ Generated pre-game summary for {away_team} @ {home_team}")
                     else:
                         results['errors'].append(f"Failed to store pre-game summary for {away_team} @ {home_team}")
@@ -327,11 +339,6 @@ Format your response as:
                     
             except Exception as e:
                 results['errors'].append(f"Error processing pre-game for {game.get('id', 'unknown')}: {e}")
-        
-        # Process post-game summaries for recently finished games
-        print("Checking for recently finished games...")
-        finished_games = self.get_recently_finished_games(hours_back=4)
-        print(f"Found {len(finished_games)} recently finished games")
         
         for game in finished_games:
             try:
@@ -351,6 +358,7 @@ Format your response as:
                     if SportsStorage.store_game_summary(summary):
                         results['post_game_summaries'].append(summary)
                         results['post_game_generated'] += 1
+                        self._mark_summary_generated(game, 'post_game')
                         print(f"✅ Generated post-game summary for {away_team} @ {home_team}")
                     else:
                         results['errors'].append(f"Failed to store post-game summary for {away_team} @ {home_team}")
@@ -369,21 +377,13 @@ Format your response as:
         return results
     
     def _has_existing_summary(self, game: Dict, summary_type: str) -> bool:
-        """Check if a game summary already exists.
-        
-        Args:
-            game: Game dictionary
-            summary_type: 'pre_game' or 'post_game'
-            
-        Returns:
-            True if summary exists, False otherwise
-        """
-        try:
-            game_id = game.get('id')
-            if not game_id:
-                return False
-            
-            return SportsStorage.has_game_summary(game_id, summary_type)
-        except Exception as e:
-            print(f"Error checking existing summary: {e}")
-            return False 
+        game_id = game.get('id')
+        if not game_id:
+            return False
+        return summary_type in self.summary_index.get(game_id, set())
+
+    def _mark_summary_generated(self, game: Dict, summary_type: str):
+        game_id = game.get('id')
+        if not game_id:
+            return
+        self.summary_index.setdefault(game_id, set()).add(summary_type)

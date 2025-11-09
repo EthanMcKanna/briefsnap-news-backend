@@ -6,12 +6,16 @@ import hashlib
 import time
 from datetime import datetime
 from pathlib import Path
+from threading import Lock
 
 from newsaggregator.config.settings import (
     OUTPUT_DIR, COMBINED_DIR, SUMMARY_DIR, 
     PROCESSED_ARTICLES_FILE, FAILED_URLS_FILE, LAST_SUMMARY_FILE
 )
 from newsaggregator.utils.similarity import is_same_day
+
+
+_COMBINED_FILE_LOCK = Lock()
 
 class FileStorage:
     """Class for file-based storage operations."""
@@ -83,25 +87,24 @@ class FileStorage:
         if not date or not is_same_day(date, datetime.now()):
             return
         
-        # Create topic-specific combined file
         filename = FileStorage.get_combined_filename(topic)
         filepath = Path(COMBINED_DIR) / filename
-        
-        # Create or append to the file
-        mode = 'a' if filepath.exists() else 'w'
-        with open(filepath, mode, encoding='utf-8') as file:
-            if mode == 'w':
-                file.write(f"Combined News Articles - {topic} - {datetime.now().strftime('%Y-%m-%d')}\n")
+
+        with _COMBINED_FILE_LOCK:
+            mode = 'a' if filepath.exists() else 'w'
+            with open(filepath, mode, encoding='utf-8') as file:
+                if mode == 'w':
+                    file.write(f"Combined News Articles - {topic} - {datetime.now().strftime('%Y-%m-%d')}\n")
+                    file.write("="*80 + "\n\n")
+
+                file.write(f"{'='*40} {source} {'='*40}\n")
+                file.write(f"Title: {title}\n")
+                file.write(f"Source: {source}\n")
+                file.write(f"Topic: {topic}\n")
+                file.write(f"Date: {date.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                file.write(f"URL: {url}\n")
+                file.write(f"Content:\n{content}\n")
                 file.write("="*80 + "\n\n")
-            
-            file.write(f"{'='*40} {source} {'='*40}\n")
-            file.write(f"Title: {title}\n")
-            file.write(f"Source: {source}\n")
-            file.write(f"Topic: {topic}\n")
-            file.write(f"Date: {date.strftime('%Y-%m-%d %H:%M:%S')}\n")
-            file.write(f"URL: {url}\n")
-            file.write(f"Content:\n{content}\n")
-            file.write("="*80 + "\n\n")
     
     @staticmethod
     def save_combined_articles(articles, topic='TOP_NEWS'):

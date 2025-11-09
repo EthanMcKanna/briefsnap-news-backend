@@ -1,9 +1,14 @@
 """Article content processor for handling news article processing workflows."""
 
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from threading import Lock
 
-from newsaggregator.config.settings import REQUEST_DELAY, FAILED_URL_RETRY_INTERVAL
+from newsaggregator.config.settings import (
+    FAILED_URL_RETRY_INTERVAL,
+    SUMMARY_ENRICHMENT_WORKERS
+)
 from newsaggregator.fetchers.article_fetcher import ArticleFetcher
 from newsaggregator.fetchers.exa_fetcher import ExaFetcher
 from newsaggregator.storage.file_storage import FileStorage
@@ -19,17 +24,24 @@ class ArticleProcessor:
         self.exa_fetcher = ExaFetcher()
         self.processed_urls = set()
         self.failed_urls = {}
+        self._state_lock = Lock()
         
     def load_state(self):
         """Load the processor state from storage."""
-        self.processed_urls = FileStorage.load_processed_articles()
-        self.failed_urls = FileStorage.load_failed_urls()
-        print(f"Loaded {len(self.processed_urls)} processed and {len(self.failed_urls)} failed articles")
-    
+        with self._state_lock:
+            self.processed_urls = FileStorage.load_processed_articles()
+            self.failed_urls = FileStorage.load_failed_urls()
+            processed = len(self.processed_urls)
+            failed = len(self.failed_urls)
+        print(f"Loaded {processed} processed and {failed} failed articles")
+
     def save_state(self):
         """Save the processor state to storage."""
-        FileStorage.save_processed_articles(self.processed_urls)
-        FileStorage.save_failed_urls(self.failed_urls)
+        with self._state_lock:
+            processed_copy = set(self.processed_urls)
+            failed_copy = dict(self.failed_urls)
+        FileStorage.save_processed_articles(processed_copy)
+        FileStorage.save_failed_urls(failed_copy)
     
     def should_retry_url(self, url):
         """Check if enough time has passed to retry a failed URL.
@@ -40,10 +52,12 @@ class ArticleProcessor:
         Returns:
             True if URL should be retried, False otherwise
         """
-        if url not in self.failed_urls:
+        with self._state_lock:
+            entry = self.failed_urls.get(url)
+        if not entry:
             return True
-        
-        elapsed = time.time() - self.failed_urls[url]['timestamp']
+
+        elapsed = time.time() - entry['timestamp']
         return elapsed >= FAILED_URL_RETRY_INTERVAL
     
     def process_article(self, entry, topic):
@@ -61,7 +75,7 @@ class ArticleProcessor:
             return None, False
             
         # Skip if URL was processed or if it recently failed
-        if url in self.processed_urls or (url in self.failed_urls and not self.should_retry_url(url)):
+        if not self._can_process_url(url):
             return None, False
 
         title = entry.get('title')
@@ -83,21 +97,17 @@ class ArticleProcessor:
                 FileStorage.append_to_combined_file(article_data)
                 
                 # Mark as processed
-                self.processed_urls.add(url)
+                self._mark_url_processed(url)
                 
-                # Remove from failed URLs if it was there
-                if url in self.failed_urls:
-                    del self.failed_urls[url]
-                    
                 print(f"Added new {topic} article: {title}")
                 return article_data, True
             else:
-                FileStorage.add_failed_url(self.failed_urls, url, "Content extraction failed")
+                self._add_failed_url(url, "Content extraction failed")
                 print(f"Failed to extract content: {title}")
                 return None, False
                 
         except Exception as e:
-            FileStorage.add_failed_url(self.failed_urls, url, str(e))
+            self._add_failed_url(url, str(e))
             print(f"Error processing article '{title}': {e}")
             return None, False
     
@@ -112,51 +122,93 @@ class ArticleProcessor:
         """
         # Check for duplicates and collect unique stories
         unique_stories = []
-        
+
         for story in summary_data.get('Stories', []):
             story['id'] = FirebaseStorage.generate_story_id()
             story_title = story.get('StoryTitle', '')
             story_description = story.get('StoryDescription', '')
             
-            # Skip duplicate stories
             if story_title and FirebaseStorage.is_duplicate_article(story_title, story_description):
                 print(f"Skipping duplicate story: {story_title}")
                 continue
-                
-            # Only fetch detailed article for unique stories
-            if story_title:
-                detailed_article, citations, img_url, summary, key_points = self.exa_fetcher.fetch_detailed_article(story_title)
-                story['FullArticle'] = detailed_article
-                story['Citations'] = citations
-                
-                # Add summary and key points
-                if summary:
-                    story['summary'] = summary
-                    print(f"[INFO] Generated summary for: {story_title}")
-                
-                if key_points:
-                    story['keyPoints'] = key_points
-                    print(f"[INFO] Generated {len(key_points)} key points for: {story_title}")
-                
-                # Upload image to R2 instead of using original URL
-                if img_url:
-                    print(f"[INFO] Found image URL: {img_url}")
-                    try:
-                        # Upload the image to Cloudflare R2
-                        r2_url = r2_storage.upload_image_from_url(img_url, story_title)
-                        if r2_url:
-                            story['img_url'] = r2_url
-                            print(f"[INFO] Uploaded image to R2: {r2_url}")
-                        else:
-                            print(f"[WARNING] Failed to upload image to R2, using original URL: {img_url}")
-                            story['img_url'] = img_url
-                    except Exception as e:
-                        print(f"[ERROR] Error uploading image to R2: {e}, using original URL: {img_url}")
-                        story['img_url'] = img_url
-                
-                unique_stories.append(story)
 
-        # Replace original stories with unique ones
-        summary_data['Stories'] = unique_stories
-        
-        return summary_data 
+            unique_stories.append(story)
+
+        if not unique_stories:
+            summary_data['Stories'] = []
+            return summary_data
+
+        max_workers = min(SUMMARY_ENRICHMENT_WORKERS, len(unique_stories)) or 1
+
+        if max_workers == 1:
+            enriched = [self._enrich_story(story) for story in unique_stories]
+        else:
+            enriched_map = {}
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(self._enrich_story, story): idx for idx, story in enumerate(unique_stories)}
+                for future in as_completed(futures):
+                    idx = futures[future]
+                    try:
+                        enriched_map[idx] = future.result()
+                    except Exception as exc:
+                        story = unique_stories[idx]
+                        print(f"[ERROR] Failed to enrich story '{story.get('StoryTitle', '')}': {exc}")
+
+            enriched = [enriched_map.get(idx) for idx in range(len(unique_stories))]
+
+        summary_data['Stories'] = [story for story in enriched if story]
+        return summary_data
+
+    def _can_process_url(self, url):
+        with self._state_lock:
+            if url in self.processed_urls:
+                return False
+            if url in self.failed_urls:
+                elapsed = time.time() - self.failed_urls[url]['timestamp']
+                if elapsed < FAILED_URL_RETRY_INTERVAL:
+                    return False
+        return True
+
+    def _mark_url_processed(self, url):
+        with self._state_lock:
+            self.processed_urls.add(url)
+            if url in self.failed_urls:
+                del self.failed_urls[url]
+
+    def _add_failed_url(self, url, reason):
+        with self._state_lock:
+            FileStorage.add_failed_url(self.failed_urls, url, reason)
+
+    def _enrich_story(self, story):
+        story_title = story.get('StoryTitle', '')
+
+        if not story_title:
+            return story
+
+        detailed_article, citations, img_url, summary, key_points = self.exa_fetcher.fetch_detailed_article(story_title)
+        story['FullArticle'] = detailed_article
+        story['Citations'] = citations
+
+        if summary:
+            story['summary'] = summary
+            print(f"[INFO] Generated summary for: {story_title}")
+
+        if key_points:
+            story['keyPoints'] = key_points
+            print(f"[INFO] Generated {len(key_points)} key points for: {story_title}")
+
+        if img_url:
+            print(f"[INFO] Found image URL: {img_url}")
+            try:
+                r2_url = r2_storage.upload_image_from_url(img_url, story_title)
+                if r2_url:
+                    story['img_url'] = r2_url
+                    print(f"[INFO] Uploaded image to R2: {r2_url}")
+                else:
+                    print(f"[WARNING] Failed to upload image to R2, using original URL: {img_url}")
+                    story['img_url'] = img_url
+            except Exception as e:
+                print(f"[ERROR] Error uploading image to R2: {e}, using original URL: {img_url}")
+                story['img_url'] = img_url
+
+        return story

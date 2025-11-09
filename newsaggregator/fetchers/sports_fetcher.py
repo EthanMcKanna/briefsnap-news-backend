@@ -3,19 +3,19 @@
 import requests
 import json
 from datetime import datetime, timedelta
-from bs4 import BeautifulSoup
 import time
-import re
 from typing import List, Dict, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from newsaggregator.config.settings import MAX_SPORT_FETCH_WORKERS
 
 class SportsFetcher:
     """Fetches upcoming sports games from various free sources."""
     
     def __init__(self):
-        self.session = requests.Session()
-        self.session.headers.update({
+        self.session_headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        })
+        }
         
         # ESPN API endpoints for different sports
         self.espn_endpoints = {
@@ -61,30 +61,22 @@ class SportsFetcher:
                 dates.append(date.strftime('%Y%m%d'))
         
         games = []
-        
-        for date in dates:
-            try:
-                url = f"{self.espn_endpoints[sport]}?dates={date}"
-                print(f"Fetching {sport.upper()} games for {date}")
-                
-                response = self.session.get(url, timeout=10)
-                response.raise_for_status()
-                
-                data = response.json()
-                
-                if 'events' in data:
-                    for event in data['events']:
-                        game = self._parse_espn_game(event, sport)
-                        if game:
-                            games.append(game)
-                
-                # Rate limiting
-                time.sleep(0.5)
-                
-            except Exception as e:
-                print(f"Error fetching {sport} games for {date}: {e}")
-                continue
-        
+
+        worker_count = min(MAX_SPORT_FETCH_WORKERS, len(dates)) or 1
+
+        if worker_count == 1:
+            for date in dates:
+                games.extend(self._fetch_games_for_date(sport, date))
+        else:
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                futures = {executor.submit(self._fetch_games_for_date, sport, date): date for date in dates}
+                for future in as_completed(futures):
+                    try:
+                        games.extend(future.result())
+                    except Exception as e:
+                        date = futures[future]
+                        print(f"Error fetching {sport} games for {date}: {e}")
+
         return games
     
     def _parse_espn_game(self, event: Dict, sport: str) -> Optional[Dict]:
@@ -220,11 +212,48 @@ class SportsFetcher:
             games = self.fetch_espn_games(sport, dates)
             all_games[sport] = games
             print(f"Found {len(games)} upcoming {sport.upper()} games")
-            
-            # Rate limiting between sports
-            time.sleep(1)
-        
+
         return all_games
+
+    def _fetch_games_for_date(self, sport: str, date: str) -> List[Dict]:
+        """Fetch games for a specific sport/date with retries."""
+        url = f"{self.espn_endpoints[sport]}?dates={date}"
+        backoff = 0.5
+        attempts = 3
+
+        for attempt in range(1, attempts + 1):
+            try:
+                response = requests.get(url, headers=self.session_headers, timeout=10)
+                if response.status_code == 429:
+                    raise requests.HTTPError("Rate limited", response=response)
+
+                response.raise_for_status()
+                data = response.json()
+
+                games = []
+                if 'events' in data:
+                    for event in data['events']:
+                        game = self._parse_espn_game(event, sport)
+                        if game:
+                            games.append(game)
+
+                return games
+            except requests.HTTPError as http_err:
+                status = getattr(http_err.response, 'status_code', None)
+                if status == 429 and attempt < attempts:
+                    sleep_time = min(backoff, 5)
+                    print(f"Rate limited fetching {sport.upper()} games for {date}, retrying in {sleep_time}s")
+                    time.sleep(sleep_time)
+                    backoff *= 2
+                    continue
+                print(f"HTTP error fetching {sport.upper()} games for {date}: {http_err}")
+            except Exception as e:
+                if attempt < attempts:
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2, 5)
+                    continue
+                print(f"Error fetching {sport.upper()} games for {date}: {e}")
+        return []
     
     def get_games_summary(self, all_games: Dict[str, List[Dict]]) -> Dict:
         """Generate a summary of all fetched games.

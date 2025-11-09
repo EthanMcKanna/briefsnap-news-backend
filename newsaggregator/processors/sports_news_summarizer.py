@@ -3,8 +3,11 @@
 import os
 from typing import Dict, List, Optional
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from google import genai
 from google.genai import types
+
+from newsaggregator.config.settings import SPORTS_NEWS_SUMMARY_CONCURRENCY
 
 
 class SportsNewsSummarizer:
@@ -116,24 +119,47 @@ Format your response as:
             Dictionary of summaries by sport code
         """
         summaries = {}
-        
         print("\n====== Generating Sports News Summaries ======")
-        
+
+        tasks = []
         for sport_code, games in sports_data.items():
-            # Only generate summaries for sports that have games
             if not games:
                 continue
-                
-            sport_name = self._get_sport_display_name(sport_code)
-            print(f"Generating news summary for {sport_name}...")
-            
-            summary = self.generate_sport_summary(sport_code, sport_name)
-            if summary:
-                summaries[sport_code] = summary
-                print(f"✅ Generated summary for {sport_name}")
-            else:
-                print(f"❌ Failed to generate summary for {sport_name}")
-        
+            tasks.append((sport_code, self._get_sport_display_name(sport_code)))
+
+        if not tasks:
+            print("No sports with games available for summaries")
+            return summaries
+
+        worker_count = min(SPORTS_NEWS_SUMMARY_CONCURRENCY, len(tasks)) or 1
+
+        if worker_count == 1:
+            for sport_code, sport_name in tasks:
+                print(f"Generating news summary for {sport_name}...")
+                summary = self.generate_sport_summary(sport_code, sport_name)
+                if summary:
+                    summaries[sport_code] = summary
+                    print(f"✅ Generated summary for {sport_name}")
+                else:
+                    print(f"❌ Failed to generate summary for {sport_name}")
+        else:
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                future_map = {
+                    executor.submit(self.generate_sport_summary, sport_code, sport_name): (sport_code, sport_name)
+                    for sport_code, sport_name in tasks
+                }
+                for future in as_completed(future_map):
+                    sport_code, sport_name = future_map[future]
+                    try:
+                        summary = future.result()
+                        if summary:
+                            summaries[sport_code] = summary
+                            print(f"✅ Generated summary for {sport_name}")
+                        else:
+                            print(f"❌ Failed to generate summary for {sport_name}")
+                    except Exception as exc:
+                        print(f"❌ Error generating summary for {sport_name}: {exc}")
+
         print(f"Generated {len(summaries)} sports news summaries")
         return summaries
     

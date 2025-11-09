@@ -1,13 +1,15 @@
 """Main aggregator for the news system that orchestrates all components."""
 
-import time
 import signal
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
 from newsaggregator.config.settings import (
     RSS_FEEDS, REQUEST_DELAY,
-    COMBINED_DIR, USE_NEWSAPI_FOR_DISCOVERY
+    COMBINED_DIR, USE_NEWSAPI_FOR_DISCOVERY,
+    MAX_CONCURRENT_ARTICLE_FETCHES
 )
 from newsaggregator.fetchers.rss_fetcher import RSSFetcher
 from newsaggregator.processors.article_processor import ArticleProcessor
@@ -15,6 +17,7 @@ from newsaggregator.selectors.article_selector import ArticleSelector
 from newsaggregator.processors.gemini_processor import GeminiProcessor
 from newsaggregator.storage.file_storage import FileStorage
 from newsaggregator.storage.firebase_storage import FirebaseStorage
+from newsaggregator.utils.rate_limiter import RateLimiter
 
 class NewsAggregator:
     """Main aggregator class that orchestrates the news collection and processing."""
@@ -26,6 +29,8 @@ class NewsAggregator:
         self.article_processor = ArticleProcessor()
         self.gemini_processor = GeminiProcessor()
         self.article_selector = ArticleSelector()
+        self.article_executor = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_ARTICLE_FETCHES)
+        self.article_rate_limiter = RateLimiter(REQUEST_DELAY)
         
         # Register signal handlers
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -93,14 +98,15 @@ class NewsAggregator:
             # Process selected articles
             new_articles_by_topic[topic] = []
             processed_count = 0
-            
+            futures = []
+
             for article in selected_articles:
                 # Validate article quality
                 is_valid, issues = self.article_selector.validate_article_quality(article)
                 if not is_valid:
                     print(f"Skipping invalid article: {', '.join(issues)}")
                     continue
-                
+
                 # Convert to entry format for processing
                 entry = {
                     'url': article.get('url'),
@@ -108,13 +114,21 @@ class NewsAggregator:
                     'source': article.get('source'),
                     'date': article.get('date')
                 }
-                
-                article_data, success = self.article_processor.process_article(entry, topic)
-                if success:
+
+                futures.append(
+                    self.article_executor.submit(self._process_article_task, entry, topic)
+                )
+
+            for future in as_completed(futures):
+                try:
+                    article_data = future.result()
+                except Exception as exc:
+                    print(f"[ERROR] Article processing failed: {exc}")
+                    continue
+
+                if article_data:
                     new_articles_by_topic[topic].append(article_data)
                     processed_count += 1
-                
-                time.sleep(REQUEST_DELAY)
             
             # Generate source diversity report
             if new_articles_by_topic[topic]:
@@ -148,7 +162,7 @@ class NewsAggregator:
                     content = f.read()
 
                 # Generate summary using Gemini
-                summary = self.gemini_processor.generate_summary(content, topic)
+                summary = self.gemini_processor.generate_chunked_summary(content, topic)
 
                 if summary:
                     # Add detailed content to each story
@@ -220,4 +234,11 @@ class NewsAggregator:
         finally:
             print("\nSaving final state...")
             self.article_processor.save_state()
-            print("Process complete") 
+            print("Process complete")
+            self.article_executor.shutdown(wait=True)
+
+    def _process_article_task(self, entry, topic):
+        """Process a single article task using shared rate limiting."""
+        self.article_rate_limiter.acquire()
+        article_data, success = self.article_processor.process_article(entry, topic)
+        return article_data if success else None
