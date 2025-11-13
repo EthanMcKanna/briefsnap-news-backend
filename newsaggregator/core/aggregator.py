@@ -5,11 +5,13 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
+from typing import List, Optional
 
 from newsaggregator.config.settings import (
-    RSS_FEEDS, REQUEST_DELAY,
+    RSS_FEEDS, REQUEST_DELAY, CHECK_INTERVAL, SUMMARY_INTERVAL,
     COMBINED_DIR, USE_NEWSAPI_FOR_DISCOVERY,
-    MAX_CONCURRENT_ARTICLE_FETCHES
+    MAX_CONCURRENT_ARTICLE_FETCHES, CONTINUOUS_AGGREGATION,
+    MAX_RUN_CYCLES, TOPICS_PER_CYCLE
 )
 from newsaggregator.fetchers.rss_fetcher import RSSFetcher
 from newsaggregator.processors.article_processor import ArticleProcessor
@@ -51,20 +53,33 @@ class NewsAggregator:
         print("\nShutdown signal received. Completing current tasks...")
         self.running = False
     
-    def process_feeds(self):
+    def process_feeds(self, topics: Optional[List[str]] = None):
         """Process feeds for all topics using enhanced article selection.
         
         Returns:
             Dictionary of new articles by topic
         """
         new_articles_by_topic = {}
+        processed_topics = []
         
-        # Get quota-optimized topics to stay within free tier limits
-        if USE_NEWSAPI_FOR_DISCOVERY:
-            topics = self.article_selector.get_quota_optimized_topics()
-            print(f"🎯 Processing {len(topics)} quota-optimized topics: {topics}")
-        else:
-            topics = self.article_selector.get_available_topics()
+        if not topics:
+            # Determine eligible topics and rotate to avoid repeats
+            if USE_NEWSAPI_FOR_DISCOVERY:
+                candidate_topics = self.article_selector.get_quota_optimized_topics()
+            else:
+                candidate_topics = self.article_selector.get_available_topics()
+
+            if not candidate_topics:
+                print("⚠️ No topics configured; skipping this cycle's fetches")
+                return {}
+
+            topics = self.article_selector.get_rotating_topic_batch(candidate_topics, TOPICS_PER_CYCLE)
+
+            if not topics:
+                print("⏳ All topics are still in cooldown; skipping this cycle's fetches")
+                return {}
+
+            print(f"🎯 Processing {len(topics)} rotating topics: {topics}")
         
         for topic in topics:
             print(f"\nProcessing {topic} articles...")
@@ -112,7 +127,8 @@ class NewsAggregator:
                     'url': article.get('url'),
                     'title': article.get('title'),
                     'source': article.get('source'),
-                    'date': article.get('date')
+                    'date': article.get('date'),
+                    'description': article.get('description') or article.get('content', '')
                 }
 
                 futures.append(
@@ -134,6 +150,12 @@ class NewsAggregator:
             if new_articles_by_topic[topic]:
                 diversity_report = self.article_selector.get_source_diversity_report(selected_articles)
                 print(f"Source diversity for {topic}: {dict(list(diversity_report.items())[:5])}")
+
+            processed_topics.append(topic)
+        
+        # Remember which topics were processed so future cycles skip them until cooldown lapses
+        if processed_topics:
+            self.article_selector.mark_topics_processed(processed_topics)
         
         return new_articles_by_topic
     
@@ -199,38 +221,71 @@ class NewsAggregator:
         
         return summaries
     
+    def _should_generate_summary(self, last_summary_time: float) -> bool:
+        if last_summary_time <= 0:
+            return True
+        return (time.time() - last_summary_time) >= SUMMARY_INTERVAL
+
+    def _sleep_until_next_cycle(self, sleep_duration: float):
+        if sleep_duration <= 0:
+            return
+
+        wake_time = time.time() + sleep_duration
+        while self.running and time.time() < wake_time:
+            remaining = wake_time - time.time()
+            time.sleep(min(5, remaining))
+
     def run(self):
-        """Run the news aggregation process as a single execution."""
-        # Initialize
+        """Run the news aggregation process, optionally looping for multiple cycles."""
         print(f"Starting news aggregation process at {datetime.now()}")
         self.article_processor.load_state()
+        last_summary_time = FileStorage.get_last_summary_time()
+        cycles_completed = 0
         
         try:
-            # Process feeds for all topics
-            new_articles_by_topic = self.process_feeds()
-            
-            # Log processed articles
-            total_new_articles = sum(len(articles) for articles in new_articles_by_topic.values())
-            print(f"\nAdded {total_new_articles} new articles across all topics")
-            for topic, articles in new_articles_by_topic.items():
-                if articles:
-                    print(f"- {topic}: {len(articles)} articles")
-            
-            # Generate summaries for each topic
-            summaries = self.generate_summaries()
-            FileStorage.save_last_summary_time(time.time())
-            
-            # Log summary generation
-            print(f"\nGenerated summaries for {len(summaries)} topics")
-            for topic in summaries.keys():
-                print(f"- {topic}: Summary generated")
-                
+            while self.running:
+                cycle_start = time.time()
+                print(f"\n=== Cycle {cycles_completed + 1} ===")
+                new_articles_by_topic = self.process_feeds()
+
+                total_new_articles = sum(len(articles) for articles in new_articles_by_topic.values())
+                print(f"\nAdded {total_new_articles} new articles this cycle")
+                for topic, articles in new_articles_by_topic.items():
+                    if articles:
+                        print(f"- {topic}: {len(articles)} articles")
+
+                if not self.running:
+                    break
+
+                # Only run summaries when sufficient time has passed
+                if self._should_generate_summary(last_summary_time):
+                    summaries = self.generate_summaries()
+                    last_summary_time = time.time()
+                    FileStorage.save_last_summary_time(last_summary_time)
+                    print(f"\nGenerated summaries for {len(summaries)} topics")
+                    for topic in summaries.keys():
+                        print(f"- {topic}: Summary generated")
+                else:
+                    remaining = SUMMARY_INTERVAL - (time.time() - last_summary_time)
+                    print(f"Summary generation delayed for {remaining/60:.1f} minutes to avoid duplicates")
+
+                cycles_completed += 1
+                if (not CONTINUOUS_AGGREGATION or cycles_completed >= MAX_RUN_CYCLES
+                        or not self.running):
+                    break
+
+                elapsed = time.time() - cycle_start
+                sleep_duration = max(0, CHECK_INTERVAL - elapsed)
+                if sleep_duration > 0:
+                    print(f"Sleeping for {sleep_duration:.0f} seconds before next cycle")
+                    self._sleep_until_next_cycle(sleep_duration)
+                else:
+                    print("Immediate next cycle due to elapsed time exceeding interval")
+
             print(f"\nNews aggregation process completed at {datetime.now()}")
-            
         except Exception as e:
             print(f"Error during news aggregation: {str(e)}")
             raise
-            
         finally:
             print("\nSaving final state...")
             self.article_processor.save_state()
