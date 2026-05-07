@@ -434,7 +434,7 @@ class DailyBriefPipeline:
             },
         )
         models_to_try = []
-        for model in (self.options.model, DEFAULT_MODEL, QUALITY_MODEL):
+        for model in (self.options.model, DEFAULT_MODEL, FAST_MODEL, QUALITY_MODEL):
             if model not in models_to_try:
                 models_to_try.append(model)
 
