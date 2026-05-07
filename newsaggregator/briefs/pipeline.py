@@ -34,9 +34,10 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 DATA_DIR = BASE_DIR / "data"
 BRIEF_DIR = DATA_DIR / "daily_briefs"
 
-DEFAULT_MODEL = "gemini-3-flash-preview"
+DEFAULT_MODEL = "gemini-2.5-flash"
+GROUNDING_MODEL = "gemini-3-flash-preview"
 QUALITY_MODEL = "gemini-3.1-pro-preview"
-FAST_MODEL = "gemini-3.1-flash-lite-preview"
+FAST_MODEL = "gemini-2.5-flash-lite"
 
 ARTICLE_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -176,6 +177,7 @@ class PipelineOptions:
     fetch_workers: int = int(os.environ.get("BRIEFSNAP_FETCH_WORKERS", "8"))
     model: str = os.environ.get("BRIEFSNAP_GEMINI_MODEL", DEFAULT_MODEL)
     max_custom_widget_requests: int = int(os.environ.get("BRIEFSNAP_MAX_CUSTOM_WIDGETS", "40"))
+    allow_fallback_publish: bool = os.environ.get("BRIEFSNAP_ALLOW_FALLBACK_PUBLISH", "").lower() == "true"
 
 
 TOPICS: tuple[TopicSource, ...] = (
@@ -249,7 +251,15 @@ class DailyBriefPipeline:
             }
         )
         self.newsapi_key = os.environ.get("NEWSAPI_KEY") or os.environ.get("NEWS_API_KEY")
-        self.gemini_key = os.environ.get("GEMINI_API_KEY")
+        self.gemini_keys = [
+            key
+            for key in (
+                os.environ.get("GEMINI_API_KEY"),
+                os.environ.get("GEMINI_API_KEY_2"),
+            )
+            if key
+        ]
+        self.gemini_key = self.gemini_keys[0] if self.gemini_keys else None
         self.today_id = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     def run(self) -> dict[str, Any]:
@@ -423,20 +433,19 @@ class DailyBriefPipeline:
         return candidate
 
     def generate_brief(self, articles: list[ArticleCandidate]) -> dict[str, Any]:
-        if not self.gemini_key:
+        if not self.gemini_keys:
             raise RuntimeError("GEMINI_API_KEY is required for non-dry-run brief generation")
 
         prompt = self._brief_prompt(articles)
-        client = genai.Client(
-            api_key=self.gemini_key,
-            http_options={
-                "timeout": int(os.environ.get("BRIEFSNAP_GEMINI_TIMEOUT_MS", "75000"))
-            },
+        clients = self._gemini_clients()
+        grounded_models = self._unique_models(
+            model
+            for model in (self.options.model, GROUNDING_MODEL, QUALITY_MODEL)
+            if self._supports_grounded_structured_output(model)
         )
-        models_to_try = []
-        for model in (self.options.model, DEFAULT_MODEL, FAST_MODEL, QUALITY_MODEL):
-            if model not in models_to_try:
-                models_to_try.append(model)
+        source_packet_models = self._unique_models(
+            (self.options.model, DEFAULT_MODEL, FAST_MODEL, GROUNDING_MODEL, QUALITY_MODEL)
+        )
 
         last_error: Exception | None = None
         grounded_config = {
@@ -446,48 +455,66 @@ class DailyBriefPipeline:
             "max_output_tokens": 8192,
             "temperature": 0.35,
         }
-        for model in models_to_try:
-            for attempt in range(1, 3):
-                try:
-                    print(f"Generating search-grounded structured brief with {model} (attempt {attempt})")
-                    response = client.models.generate_content(
-                        model=model,
-                        contents=prompt,
-                        config=grounded_config,
-                    )
-                    payload = self._parse_json_response(response.text)
-                    return self._normalize_brief(payload, articles, f"{model}-search-grounded")
-                except Exception as exc:
-                    print(f"[WARN] Gemini search-grounded model {model} failed: {exc}")
-                    last_error = exc
-                    if attempt >= 2 or not self._should_retry_generation(exc):
-                        break
-                    time.sleep(4 * attempt)
+        for client_label, client in clients:
+            for model in grounded_models:
+                for attempt in range(1, 3):
+                    try:
+                        print(
+                            "Generating search-grounded structured brief "
+                            f"with {model} via {client_label} (attempt {attempt})"
+                        )
+                        response = client.models.generate_content(
+                            model=model,
+                            contents=prompt,
+                            config=grounded_config,
+                        )
+                        payload = self._parse_json_response(response.text)
+                        return self._normalize_brief(payload, articles, f"{model}-search-grounded")
+                    except Exception as exc:
+                        print(f"[WARN] Gemini search-grounded model {model} via {client_label} failed: {exc}")
+                        last_error = exc
+                        if attempt >= 2 or not self._should_retry_generation(exc):
+                            break
+                        time.sleep(4 * attempt)
 
-        for model in (DEFAULT_MODEL, FAST_MODEL):
-            try:
-                print(f"Generating structured source-packet brief with {model}")
-                response = client.models.generate_content(
-                    model=model,
-                    contents=prompt,
-                    config={
-                        "response_mime_type": "application/json",
-                        "response_json_schema": ARTICLE_SCHEMA,
-                        "max_output_tokens": 8192,
-                        "temperature": 0.35,
-                    },
-                )
-                payload = self._parse_json_response(response.text)
-                return self._normalize_brief(payload, articles, f"{model}-source-packet")
-            except Exception as exc:
-                print(f"[WARN] Gemini source-packet model {model} failed: {exc}")
-                last_error = exc
+        source_config = {
+            "response_mime_type": "application/json",
+            "response_json_schema": ARTICLE_SCHEMA,
+            "max_output_tokens": 8192,
+            "temperature": 0.25,
+        }
+        for client_label, client in clients:
+            for model in source_packet_models:
+                for prompt_label, source_prompt in (
+                    ("full", prompt),
+                    ("compact", self._brief_prompt(articles[:24], max_excerpt_chars=450)),
+                ):
+                    try:
+                        print(
+                            "Generating structured source-packet brief "
+                            f"with {model} via {client_label} ({prompt_label})"
+                        )
+                        response = client.models.generate_content(
+                            model=model,
+                            contents=source_prompt,
+                            config=source_config,
+                        )
+                        payload = self._parse_json_response(response.text)
+                        return self._normalize_brief(payload, articles, f"{model}-source-packet")
+                    except Exception as exc:
+                        print(f"[WARN] Gemini source-packet model {model} via {client_label} failed: {exc}")
+                        last_error = exc
+                        if not self._should_retry_generation(exc):
+                            break
 
-        print(f"[WARN] Gemini unavailable; publishing source-ranked fallback brief: {last_error}")
+        message = f"Gemini unavailable after all configured models; refusing to publish fallback brief: {last_error}"
+        if not self.options.allow_fallback_publish:
+            raise RuntimeError(message)
+        print(f"[WARN] {message}")
         return self._fallback_brief(articles, model_used="source-ranked-fallback")
 
-    def _brief_prompt(self, articles: list[ArticleCandidate]) -> str:
-        records = [article.prompt_record() for article in articles]
+    def _brief_prompt(self, articles: list[ArticleCandidate], max_excerpt_chars: int = 900) -> str:
+        records = [article.prompt_record(max_chars=max_excerpt_chars) for article in articles]
         generated_at = datetime.now(timezone.utc).isoformat()
         return f"""
 You are the editor of BriefSnap, an iOS app whose entire value proposition is
@@ -515,6 +542,31 @@ Generated at: {generated_at}
 Source packet:
 {json.dumps(records, ensure_ascii=False)}
 """.strip()
+
+    def _gemini_clients(self) -> list[tuple[str, Any]]:
+        timeout = int(os.environ.get("BRIEFSNAP_GEMINI_TIMEOUT_MS", "75000"))
+        return [
+            (
+                f"key-{index}",
+                genai.Client(
+                    api_key=api_key,
+                    http_options={"timeout": timeout},
+                ),
+            )
+            for index, api_key in enumerate(self.gemini_keys, start=1)
+        ]
+
+    @staticmethod
+    def _unique_models(models: Any) -> list[str]:
+        unique: list[str] = []
+        for model in models:
+            if model and model not in unique:
+                unique.append(model)
+        return unique
+
+    @staticmethod
+    def _supports_grounded_structured_output(model: str) -> bool:
+        return model.startswith("gemini-3")
 
     def _normalize_brief(
         self,
