@@ -119,6 +119,19 @@ ARTICLE_SCHEMA: dict[str, Any] = {
     ],
 }
 
+CUSTOM_WIDGET_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string"},
+        "summary": {"type": "string"},
+        "items": {
+            "type": "array",
+            "items": {"type": "string"},
+        },
+    },
+    "required": ["title", "summary", "items"],
+}
+
 
 @dataclass(frozen=True)
 class TopicSource:
@@ -162,6 +175,7 @@ class PipelineOptions:
     max_total_articles: int = int(os.environ.get("BRIEFSNAP_MAX_TOTAL_ARTICLES", "48"))
     fetch_workers: int = int(os.environ.get("BRIEFSNAP_FETCH_WORKERS", "8"))
     model: str = os.environ.get("BRIEFSNAP_GEMINI_MODEL", DEFAULT_MODEL)
+    max_custom_widget_requests: int = int(os.environ.get("BRIEFSNAP_MAX_CUSTOM_WIDGETS", "40"))
 
 
 TOPICS: tuple[TopicSource, ...] = (
@@ -808,7 +822,152 @@ Source packet:
         db.collection("daily_briefs").document(doc_id).set(payload)
         db.collection("daily_brief_history").document(doc_id).set(payload)
         self._publish_legacy_summary(db, payload)
+        self._refresh_custom_widget_requests(db, payload)
         print(f"Published daily brief to Firestore document daily_briefs/{doc_id}")
+
+    def _refresh_custom_widget_requests(self, db: Any, brief: dict[str, Any]) -> None:
+        if not self.gemini_key:
+            print("[WARN] GEMINI_API_KEY missing; custom widget refresh skipped")
+            return
+
+        try:
+            requests_query = (
+                db.collection("custom_widget_requests")
+                .where("active", "==", True)
+                .limit(self.options.max_custom_widget_requests)
+                .stream()
+            )
+            requests = list(requests_query)
+        except Exception as exc:
+            print(f"[WARN] Could not load custom widget requests: {exc}")
+            return
+
+        if not requests:
+            print("No active custom widget requests to refresh")
+            return
+
+        client = genai.Client(
+            api_key=self.gemini_key,
+            http_options={
+                "timeout": int(os.environ.get("BRIEFSNAP_WIDGET_GEMINI_TIMEOUT_MS", "30000"))
+            },
+        )
+        refreshed = 0
+        for request_doc in requests:
+            data = request_doc.to_dict() or {}
+            prompt = str(data.get("prompt") or data.get("description") or "").strip()
+            if len(prompt) < 4:
+                continue
+            try:
+                widget = self._generate_custom_widget(client, prompt, data, brief)
+                now = datetime.now(timezone.utc)
+                request_doc.reference.set(
+                    {
+                        "latest_widget": widget,
+                        "latest_title": widget["title"],
+                        "latest_summary": widget["summary"],
+                        "latest_items": widget["items"],
+                        "latest_generated_at": now,
+                        "latest_model_used": widget["model_used"],
+                        "status": "ready",
+                        "error_message": None,
+                        "updated_at": now,
+                    },
+                    merge=True,
+                )
+                db.collection("custom_widget_history").document(
+                    f"{request_doc.id}_{self.today_id}"
+                ).set(
+                    {
+                        "request_id": request_doc.id,
+                        "device_id": data.get("device_id"),
+                        "prompt": prompt,
+                        "widget": widget,
+                        "generated_at": now,
+                    }
+                )
+                refreshed += 1
+            except Exception as exc:
+                now = datetime.now(timezone.utc)
+                request_doc.reference.set(
+                    {
+                        "status": "error",
+                        "error_message": str(exc)[:500],
+                        "updated_at": now,
+                    },
+                    merge=True,
+                )
+                print(f"[WARN] Custom widget {request_doc.id} failed: {exc}")
+
+        print(f"Refreshed {refreshed} custom widget request(s)")
+
+    def _generate_custom_widget(
+        self,
+        client: Any,
+        prompt: str,
+        request_data: dict[str, Any],
+        brief: dict[str, Any],
+    ) -> dict[str, Any]:
+        context_stories = [
+            {
+                "title": story.get("title"),
+                "source": story.get("source"),
+                "summary": story.get("summary"),
+            }
+            for story in brief.get("stories", [])[:8]
+        ]
+        requested_title = str(request_data.get("title") or "").strip()
+        generated_at = datetime.now(timezone.utc).isoformat()
+        widget_prompt = f"""
+Create one BriefSnap custom news widget for a user-defined topic.
+
+User request:
+{prompt}
+
+Existing daily brief context:
+{json.dumps(context_stories, ensure_ascii=False)}
+
+Rules:
+- Use Google Search for current facts.
+- Keep it concise and scannable for a phone widget.
+- Include only facts that are relevant to the user's request.
+- If the request is too broad, choose the most important current angle.
+- Return JSON with title, summary, and 3 to 5 short items.
+- Do not mention that you used Search.
+
+Preferred title, if useful: {requested_title or "none"}
+Generated at: {generated_at}
+""".strip()
+
+        response = client.models.generate_content(
+            model=DEFAULT_MODEL,
+            contents=widget_prompt,
+            config={
+                "tools": [{"google_search": {}}],
+                "response_mime_type": "application/json",
+                "response_json_schema": CUSTOM_WIDGET_SCHEMA,
+                "max_output_tokens": 1536,
+                "temperature": 0.35,
+            },
+        )
+        payload = json.loads(response.text)
+        title = str(payload.get("title") or requested_title or prompt[:48]).strip()
+        summary = str(payload.get("summary") or "").strip()
+        items = [
+            str(item).strip()
+            for item in payload.get("items", [])
+            if str(item).strip()
+        ][:5]
+        if not summary and not items:
+            raise RuntimeError("Gemini returned an empty custom widget")
+        return {
+            "topic": "CUSTOM",
+            "title": title[:80],
+            "summary": summary[:400],
+            "items": items,
+            "prompt": prompt,
+            "model_used": f"{DEFAULT_MODEL}-search-grounded",
+        }
 
     def _publish_legacy_summary(self, db: Any, brief: dict[str, Any]) -> None:
         stories = []
