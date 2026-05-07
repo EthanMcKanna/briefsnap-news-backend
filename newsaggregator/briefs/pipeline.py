@@ -34,8 +34,8 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 DATA_DIR = BASE_DIR / "data"
 BRIEF_DIR = DATA_DIR / "daily_briefs"
 
-DEFAULT_MODEL = "gemini-3.1-pro-preview"
-FALLBACK_MODEL = "gemini-3-flash-preview"
+DEFAULT_MODEL = "gemini-3-flash-preview"
+QUALITY_MODEL = "gemini-3.1-pro-preview"
 FAST_MODEL = "gemini-3.1-flash-lite-preview"
 
 ARTICLE_SCHEMA: dict[str, Any] = {
@@ -420,7 +420,7 @@ class DailyBriefPipeline:
             },
         )
         models_to_try = []
-        for model in (self.options.model, DEFAULT_MODEL, FALLBACK_MODEL):
+        for model in (self.options.model, DEFAULT_MODEL, QUALITY_MODEL):
             if model not in models_to_try:
                 models_to_try.append(model)
 
@@ -446,7 +446,7 @@ class DailyBriefPipeline:
                 print(f"[WARN] Gemini model {model} failed: {exc}")
                 last_error = exc
 
-        for model in (FALLBACK_MODEL, FAST_MODEL):
+        for model in (DEFAULT_MODEL, FAST_MODEL):
             try:
                 print(f"Generating structured source-packet brief with {model}")
                 response = client.models.generate_content(
@@ -491,6 +491,7 @@ Rules:
 - Keep the prose crisp and useful. No hype, no generic caveats.
 - Prefer US relevance for TOP_NEWS, but preserve important world context.
 - The response must match the JSON schema exactly.
+- Return at least five custom_widgets when the source packet supports them.
 
 Generated at: {generated_at}
 
@@ -534,6 +535,9 @@ Source packet:
             return self._fallback_brief(articles, model_used=model_used)
 
         now = datetime.now(timezone.utc)
+        sections = self._normalize_sections(payload.get("sections", []), normalized_stories, articles)
+        widgets = self._normalize_widgets(payload.get("custom_widgets", []), normalized_stories, articles)
+
         brief = {
             "id": self.today_id,
             "generated_at": now.isoformat(),
@@ -542,8 +546,8 @@ Source packet:
             "dek": payload.get("dek", ""),
             "summary": payload.get("summary", ""),
             "quick_hits": payload.get("quick_hits", [])[:8],
-            "sections": payload.get("sections", [])[:7],
-            "custom_widgets": payload.get("custom_widgets", [])[:8],
+            "sections": sections,
+            "custom_widgets": widgets,
             "stories": normalized_stories[:18],
             "source_count": len(articles),
         }
@@ -552,10 +556,6 @@ Source packet:
     def _fallback_brief(self, articles: list[ArticleCandidate], model_used: str) -> dict[str, Any]:
         now = datetime.now(timezone.utc)
         top = articles[:12]
-        topics: dict[str, list[ArticleCandidate]] = {}
-        for article in top:
-            topics.setdefault(article.topic, []).append(article)
-
         stories = [
             {
                 "id": article.id,
@@ -571,16 +571,6 @@ Source packet:
             }
             for article in top
         ]
-        sections = [
-            {
-                "topic": topic,
-                "title": self._topic_name(topic),
-                "summary": " • ".join(article.title for article in group[:3]),
-                "why_it_matters": "A compact view of current developments in this category.",
-                "story_ids": [article.id for article in group[:4]],
-            }
-            for topic, group in topics.items()
-        ]
         return {
             "id": self.today_id,
             "generated_at": now.isoformat(),
@@ -589,19 +579,153 @@ Source packet:
             "dek": "The most useful stories available from the current source packet.",
             "summary": " ".join(article.title for article in top[:4]),
             "quick_hits": [article.title for article in top[:6]],
-            "sections": sections[:7],
-            "custom_widgets": [
-                {
-                    "topic": topic,
-                    "title": self._topic_name(topic),
-                    "summary": "Latest selected updates.",
-                    "items": [article.title for article in group[:4]],
-                }
-                for topic, group in topics.items()
-            ][:8],
+            "sections": self._normalize_sections([], stories, articles),
+            "custom_widgets": self._normalize_widgets([], stories, articles),
             "stories": stories,
             "source_count": len(articles),
         }
+
+    def _normalize_sections(
+        self,
+        raw_sections: Any,
+        stories: list[dict[str, Any]],
+        articles: list[ArticleCandidate],
+    ) -> list[dict[str, Any]]:
+        sections: list[dict[str, Any]] = []
+        seen_topics: set[str] = set()
+
+        if isinstance(raw_sections, list):
+            for section in raw_sections:
+                if not isinstance(section, dict):
+                    continue
+                topic = str(section.get("topic") or "").strip()
+                title = str(section.get("title") or "").strip()
+                summary = str(section.get("summary") or "").strip()
+                why_it_matters = str(section.get("why_it_matters") or "").strip()
+                story_ids = [
+                    str(story_id)
+                    for story_id in section.get("story_ids", [])
+                    if str(story_id).strip()
+                ]
+                if not topic or (not summary and not why_it_matters):
+                    continue
+                if topic in seen_topics:
+                    continue
+                sections.append(
+                    {
+                        "topic": topic,
+                        "title": title or self._topic_name(topic),
+                        "summary": summary,
+                        "why_it_matters": why_it_matters,
+                        "story_ids": story_ids,
+                    }
+                )
+                seen_topics.add(topic)
+                if len(sections) >= 7:
+                    return sections
+
+        for topic, group in self._topic_article_groups(articles).items():
+            if topic in seen_topics or not group:
+                continue
+            related_stories = [story for story in stories if story.get("topic") == topic]
+            story_ids = [story["id"] for story in related_stories[:4] if story.get("id")]
+            if not story_ids:
+                story_ids = [article.id for article in group[:4]]
+            sections.append(
+                {
+                    "topic": topic,
+                    "title": self._topic_name(topic),
+                    "summary": " • ".join(article.title for article in group[:3]),
+                    "why_it_matters": "A compact view of current developments in this category.",
+                    "story_ids": story_ids,
+                }
+            )
+            seen_topics.add(topic)
+            if len(sections) >= 7:
+                break
+
+        return sections
+
+    def _normalize_widgets(
+        self,
+        raw_widgets: Any,
+        stories: list[dict[str, Any]],
+        articles: list[ArticleCandidate],
+    ) -> list[dict[str, Any]]:
+        widgets: list[dict[str, Any]] = []
+        seen_topics: set[str] = set()
+
+        if isinstance(raw_widgets, list):
+            for widget in raw_widgets:
+                if not isinstance(widget, dict):
+                    continue
+                topic = str(widget.get("topic") or "").strip()
+                title = str(widget.get("title") or "").strip()
+                summary = str(widget.get("summary") or "").strip()
+                items = [
+                    str(item).strip()
+                    for item in widget.get("items", [])
+                    if str(item).strip()
+                ]
+                if not topic or (not summary and not items):
+                    continue
+                if topic in seen_topics:
+                    continue
+                widgets.append(
+                    {
+                        "topic": topic,
+                        "title": title or self._topic_name(topic),
+                        "summary": summary,
+                        "items": items[:5],
+                    }
+                )
+                seen_topics.add(topic)
+                if len(widgets) >= 8:
+                    return widgets
+
+        for topic, group in self._topic_article_groups(articles).items():
+            if topic in seen_topics or not group:
+                continue
+            related_stories = [story for story in stories if story.get("topic") == topic]
+            items = [story["title"] for story in related_stories[:4] if story.get("title")]
+            if not items:
+                items = [article.title for article in group[:4]]
+            summary = ""
+            if related_stories:
+                summary = str(related_stories[0].get("summary") or "").strip()
+            if not summary:
+                summary = (group[0].description or group[0].content[:220] or "Latest selected updates.").strip()
+            widgets.append(
+                {
+                    "topic": topic,
+                    "title": self._topic_name(topic),
+                    "summary": summary[:260],
+                    "items": items[:5],
+                }
+            )
+            seen_topics.add(topic)
+            if len(widgets) >= 8:
+                break
+
+        return widgets
+
+    @staticmethod
+    def _topic_article_groups(articles: list[ArticleCandidate]) -> dict[str, list[ArticleCandidate]]:
+        groups: dict[str, list[ArticleCandidate]] = {}
+        preferred_order = {topic.code: index for index, topic in enumerate(TOPICS)}
+        for article in sorted(articles, key=lambda item: item.score, reverse=True):
+            group = groups.setdefault(article.topic, [])
+            if len(group) < 5:
+                group.append(article)
+        return dict(
+            sorted(
+                groups.items(),
+                key=lambda item: (
+                    preferred_order.get(item[0], len(preferred_order)),
+                    -sum(article.score for article in item[1]),
+                ),
+            )
+        )
 
     def write_artifact(self, brief: dict[str, Any]) -> Path:
         path = BRIEF_DIR / f"daily_brief_{self.today_id}.json"
