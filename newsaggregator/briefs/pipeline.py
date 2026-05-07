@@ -46,9 +46,7 @@ ARTICLE_SCHEMA: dict[str, Any] = {
         "summary": {"type": "string"},
         "quick_hits": {
             "type": "array",
-            "items": {"type": "string"},
-            "minItems": 4,
-            "maxItems": 8,
+            "items": {"type": "string"}
         },
         "sections": {
             "type": "array",
@@ -61,15 +59,11 @@ ARTICLE_SCHEMA: dict[str, Any] = {
                     "why_it_matters": {"type": "string"},
                     "story_ids": {
                         "type": "array",
-                        "items": {"type": "string"},
-                        "minItems": 1,
-                        "maxItems": 5,
+                        "items": {"type": "string"}
                     },
                 },
                 "required": ["topic", "title", "summary", "why_it_matters", "story_ids"],
             },
-            "minItems": 3,
-            "maxItems": 7,
         },
         "custom_widgets": {
             "type": "array",
@@ -81,15 +75,11 @@ ARTICLE_SCHEMA: dict[str, Any] = {
                     "summary": {"type": "string"},
                     "items": {
                         "type": "array",
-                        "items": {"type": "string"},
-                        "minItems": 2,
-                        "maxItems": 5,
+                        "items": {"type": "string"}
                     },
                 },
                 "required": ["topic", "title", "summary", "items"],
             },
-            "minItems": 3,
-            "maxItems": 8,
         },
         "stories": {
             "type": "array",
@@ -103,7 +93,7 @@ ARTICLE_SCHEMA: dict[str, Any] = {
                     "url": {"type": "string"},
                     "summary": {"type": "string"},
                     "why_it_matters": {"type": "string"},
-                    "urgency": {"type": "string", "enum": ["high", "medium", "low"]},
+                    "urgency": {"type": "string"},
                 },
                 "required": [
                     "id",
@@ -116,8 +106,6 @@ ARTICLE_SCHEMA: dict[str, Any] = {
                     "urgency",
                 ],
             },
-            "minItems": 8,
-            "maxItems": 18,
         },
     },
     "required": [
@@ -153,7 +141,7 @@ class ArticleCandidate:
     image_url: str | None = None
     score: float = 0
 
-    def prompt_record(self, max_chars: int = 1800) -> dict[str, Any]:
+    def prompt_record(self, max_chars: int = 900) -> dict[str, Any]:
         body = self.content or self.description
         return {
             "id": self.id,
@@ -432,28 +420,49 @@ class DailyBriefPipeline:
             },
         )
         models_to_try = []
-        for model in (self.options.model, DEFAULT_MODEL, FALLBACK_MODEL, FAST_MODEL):
+        for model in (self.options.model, DEFAULT_MODEL, FALLBACK_MODEL):
             if model not in models_to_try:
                 models_to_try.append(model)
 
         last_error: Exception | None = None
+        grounded_config = {
+            "tools": [{"google_search": {}}, {"url_context": {}}],
+            "response_mime_type": "application/json",
+            "response_json_schema": ARTICLE_SCHEMA,
+            "max_output_tokens": 8192,
+            "temperature": 0.35,
+        }
         for model in models_to_try:
             try:
                 print(f"Generating structured brief with {model}")
                 response = client.models.generate_content(
                     model=model,
                     contents=prompt,
-                    config={
-                        "tools": [{"google_search": {}}, {"url_context": {}}],
-                        "response_mime_type": "application/json",
-                        "response_json_schema": ARTICLE_SCHEMA,
-                        "thinking_config": {"thinking_level": "low"},
-                    },
+                    config=grounded_config,
                 )
                 payload = json.loads(response.text)
                 return self._normalize_brief(payload, articles, model)
             except Exception as exc:
                 print(f"[WARN] Gemini model {model} failed: {exc}")
+                last_error = exc
+
+        for model in (FALLBACK_MODEL, FAST_MODEL):
+            try:
+                print(f"Generating structured source-packet brief with {model}")
+                response = client.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                    config={
+                        "response_mime_type": "application/json",
+                        "response_json_schema": ARTICLE_SCHEMA,
+                        "max_output_tokens": 8192,
+                        "temperature": 0.35,
+                    },
+                )
+                payload = json.loads(response.text)
+                return self._normalize_brief(payload, articles, f"{model}-source-packet")
+            except Exception as exc:
+                print(f"[WARN] Gemini source-packet model {model} failed: {exc}")
                 last_error = exc
 
         print(f"[WARN] Gemini unavailable; publishing source-ranked fallback brief: {last_error}")
