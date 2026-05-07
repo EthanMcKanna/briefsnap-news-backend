@@ -455,7 +455,7 @@ class DailyBriefPipeline:
                         contents=prompt,
                         config=grounded_config,
                     )
-                    payload = json.loads(response.text)
+                    payload = self._parse_json_response(response.text)
                     return self._normalize_brief(payload, articles, f"{model}-search-grounded")
                 except Exception as exc:
                     print(f"[WARN] Gemini search-grounded model {model} failed: {exc}")
@@ -477,7 +477,7 @@ class DailyBriefPipeline:
                         "temperature": 0.35,
                     },
                 )
-                payload = json.loads(response.text)
+                payload = self._parse_json_response(response.text)
                 return self._normalize_brief(payload, articles, f"{model}-source-packet")
             except Exception as exc:
                 print(f"[WARN] Gemini source-packet model {model} failed: {exc}")
@@ -793,6 +793,21 @@ Source packet:
             )
         )
 
+    @staticmethod
+    def _parse_json_response(text: str) -> dict[str, Any]:
+        cleaned = text.strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+            cleaned = re.sub(r"\s*```$", "", cleaned)
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            start = cleaned.find("{")
+            end = cleaned.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                return json.loads(cleaned[start : end + 1])
+            raise
+
     def write_artifact(self, brief: dict[str, Any]) -> Path:
         path = BRIEF_DIR / f"daily_brief_{self.today_id}.json"
         with path.open("w", encoding="utf-8") as handle:
@@ -939,35 +954,44 @@ Preferred title, if useful: {requested_title or "none"}
 Generated at: {generated_at}
 """.strip()
 
-        response = client.models.generate_content(
-            model=DEFAULT_MODEL,
-            contents=widget_prompt,
-            config={
-                "tools": [{"google_search": {}}],
-                "response_mime_type": "application/json",
-                "response_json_schema": CUSTOM_WIDGET_SCHEMA,
-                "max_output_tokens": 1536,
-                "temperature": 0.35,
-            },
-        )
-        payload = json.loads(response.text)
-        title = str(payload.get("title") or requested_title or prompt[:48]).strip()
-        summary = str(payload.get("summary") or "").strip()
-        items = [
-            str(item).strip()
-            for item in payload.get("items", [])
-            if str(item).strip()
-        ][:5]
-        if not summary and not items:
-            raise RuntimeError("Gemini returned an empty custom widget")
-        return {
-            "topic": "CUSTOM",
-            "title": title[:80],
-            "summary": summary[:400],
-            "items": items,
-            "prompt": prompt,
-            "model_used": f"{DEFAULT_MODEL}-search-grounded",
-        }
+        last_error: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                response = client.models.generate_content(
+                    model=DEFAULT_MODEL,
+                    contents=widget_prompt,
+                    config={
+                        "tools": [{"google_search": {}}],
+                        "response_mime_type": "application/json",
+                        "response_json_schema": CUSTOM_WIDGET_SCHEMA,
+                        "max_output_tokens": 2048,
+                        "temperature": 0.25,
+                    },
+                )
+                payload = self._parse_json_response(response.text)
+                title = str(payload.get("title") or requested_title or prompt[:48]).strip()
+                summary = str(payload.get("summary") or "").strip()
+                items = [
+                    str(item).strip()
+                    for item in payload.get("items", [])
+                    if str(item).strip()
+                ][:5]
+                if not summary and not items:
+                    raise RuntimeError("Gemini returned an empty custom widget")
+                return {
+                    "topic": "CUSTOM",
+                    "title": title[:80],
+                    "summary": summary[:400],
+                    "items": items,
+                    "prompt": prompt,
+                    "model_used": f"{DEFAULT_MODEL}-search-grounded",
+                }
+            except Exception as exc:
+                last_error = exc
+                if attempt < 3:
+                    time.sleep(2 * attempt)
+
+        raise RuntimeError(f"Gemini custom widget failed after retries: {last_error}")
 
     def _publish_legacy_summary(self, db: Any, brief: dict[str, Any]) -> None:
         stories = []
