@@ -535,11 +535,44 @@ Source packet:
             )
 
         if len(normalized_stories) < 6:
+            for article in articles:
+                if article.id in story_ids:
+                    continue
+                story_ids.add(article.id)
+                normalized_stories.append(
+                    {
+                        "id": article.id,
+                        "topic": article.topic,
+                        "title": article.title,
+                        "source": article.source,
+                        "url": article.url,
+                        "summary": article.description or (article.content[:240] if article.content else ""),
+                        "why_it_matters": "Selected as one of the strongest current stories in the source packet.",
+                        "urgency": "medium",
+                        "published_at": article.published_at,
+                        "image_url": article.image_url,
+                    }
+                )
+                if len(normalized_stories) >= 12:
+                    break
+
+        if len(normalized_stories) < 6:
             return self._fallback_brief(articles, model_used=model_used)
 
         now = datetime.now(timezone.utc)
         sections = self._normalize_sections(payload.get("sections", []), normalized_stories, articles)
         widgets = self._normalize_widgets(payload.get("custom_widgets", []), normalized_stories, articles)
+
+        summary = str(payload.get("summary") or "").strip()
+        quick_hits = [
+            str(hit).strip()
+            for hit in payload.get("quick_hits", [])
+            if str(hit).strip()
+        ]
+        if not summary:
+            summary = " ".join(story["title"] for story in normalized_stories[:4])
+        if not quick_hits:
+            quick_hits = [story["title"] for story in normalized_stories[:6]]
 
         brief = {
             "id": self.today_id,
@@ -547,8 +580,8 @@ Source packet:
             "model_used": model_used,
             "headline": payload.get("headline", "Today's Brief"),
             "dek": payload.get("dek", ""),
-            "summary": payload.get("summary", ""),
-            "quick_hits": payload.get("quick_hits", [])[:8],
+            "summary": summary,
+            "quick_hits": quick_hits[:8],
             "sections": sections,
             "custom_widgets": widgets,
             "stories": normalized_stories[:18],
