@@ -425,7 +425,12 @@ class DailyBriefPipeline:
             raise RuntimeError("GEMINI_API_KEY is required for non-dry-run brief generation")
 
         prompt = self._brief_prompt(articles)
-        client = genai.Client(api_key=self.gemini_key)
+        client = genai.Client(
+            api_key=self.gemini_key,
+            http_options={
+                "timeout": int(os.environ.get("BRIEFSNAP_GEMINI_TIMEOUT_MS", "75000"))
+            },
+        )
         models_to_try = []
         for model in (self.options.model, DEFAULT_MODEL, FALLBACK_MODEL, FAST_MODEL):
             if model not in models_to_try:
