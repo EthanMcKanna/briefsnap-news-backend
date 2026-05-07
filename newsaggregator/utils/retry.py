@@ -3,7 +3,6 @@
 import time
 import functools
 import re
-import google.generativeai as genai
 from google.api_core.exceptions import ResourceExhausted, ServiceUnavailable
 from newsaggregator.config.settings import (
     GEMINI_BASE_DELAY, GEMINI_MAX_RETRIES, GEMINI_MAX_DELAY, 
@@ -20,16 +19,22 @@ class GeminiAPIManager:
         self.key_rate_limited_until = {}  # Track rate limit cooldown for each key
         
         if not self.api_keys:
-            raise ValueError("At least one Gemini API key must be configured")
+            print("[WARN] No Gemini API keys configured")
         
         # Initialize with the first API key
         self.configure_current_key()
     
     def configure_current_key(self):
-        """Configure Gemini with the current API key."""
-        current_key = self.api_keys[self.current_key_index]
-        genai.configure(api_key=current_key)
-        print(f"[INFO] Configured Gemini with API key #{self.current_key_index + 1}")
+        """Record the current Gemini key for callers that build clients lazily."""
+        if not self.api_keys:
+            return
+        print(f"[INFO] Selected Gemini API key #{self.current_key_index + 1}")
+
+    @property
+    def current_api_key(self):
+        if not self.api_keys:
+            return None
+        return self.api_keys[self.current_key_index]
     
     def get_next_available_key(self):
         """Switch to the next available API key that's not rate limited."""

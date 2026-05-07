@@ -1,4 +1,4 @@
-"""Sports news summarizer using Gemini 2.5 Flash with Google Search."""
+"""Sports news summarizer using current Gemini models with Google Search."""
 
 import os
 from typing import Dict, List, Optional
@@ -11,14 +11,14 @@ from newsaggregator.config.settings import SPORTS_NEWS_SUMMARY_CONCURRENCY
 
 
 class SportsNewsSummarizer:
-    """Class for generating sports news summaries using Gemini 2.5 Flash with Google Search."""
+    """Class for generating sports news summaries using Gemini 3 Flash with Google Search."""
     
     def __init__(self):
         """Initialize the Gemini client."""
         self.client = genai.Client(
             api_key=os.environ.get("GEMINI_API_KEY"),
         )
-        self.model = "gemini-2.5-flash-preview-05-20"
+        self.model = os.environ.get("BRIEFSNAP_SPORTS_GEMINI_MODEL", "gemini-3-flash-preview")
         
         # Sport mapping for search queries
         self.sports_mapping = {

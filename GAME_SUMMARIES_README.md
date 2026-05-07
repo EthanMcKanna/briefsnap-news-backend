@@ -78,7 +78,7 @@ Game summaries are stored in the `game_summaries` Firestore collection with the 
   summary: "Generated summary text",
   generated_at: "ISO timestamp",
   stored_at: "ISO timestamp",
-  model_used: "gemini-2.0-flash-lite",
+  model_used: "gemini-3-flash-preview",
   // Post-game only:
   final_score: "Away Team X, Home Team Y"
 }
@@ -138,7 +138,7 @@ python test_game_summaries.py
 The game summary system uses the same configuration as the main sports aggregator:
 
 - **API Key**: Uses `GEMINI_API_KEY` environment variable
-- **Model**: Uses `gemini-2.0-flash-lite` for efficient processing
+- **Model**: Uses `gemini-3-flash-preview` for efficient processing
 - **Firebase**: Uses existing Firebase credentials
 - **Cleanup**: Automatically removes summaries older than 30 days
 

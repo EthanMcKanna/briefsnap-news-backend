@@ -7,7 +7,6 @@ import os
 import sys
 from pathlib import Path
 from datetime import timedelta
-from google.ai.generativelanguage_v1beta.types import content
 
 # Base paths
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -30,6 +29,7 @@ COMBINED_DIR = DATA_DIR / 'combined_articles'
 PROCESSED_ARTICLES_FILE = DATA_DIR / 'processed_articles.json'
 FAILED_URLS_FILE = DATA_DIR / 'failed_urls.json'
 LAST_SUMMARY_FILE = DATA_DIR / 'last_summary_time.txt'
+TOPIC_ROTATION_FILE = DATA_DIR / 'topic_rotation.json'
 
 # Fetch configuration
 ARTICLES_PER_FEED = 20
@@ -43,6 +43,12 @@ USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 CHECK_INTERVAL = 600  # 10 minutes between feed checks
 SUMMARY_INTERVAL = 7200  # 2 hours in seconds
 FAILED_URL_RETRY_INTERVAL = 86400  # 24 hours in seconds
+
+# Aggregation loop configuration
+CONTINUOUS_AGGREGATION = os.environ.get("CONTINUOUS_AGGREGATION", "true").lower() == "true"
+MAX_RUN_CYCLES = int(os.environ.get("MAX_RUN_CYCLES", 6))
+TOPICS_PER_CYCLE = int(os.environ.get("TOPICS_PER_CYCLE", 2))
+TOPIC_COOLDOWN_SECONDS = int(os.environ.get("TOPIC_COOLDOWN_SECONDS", 90 * 60))  # 90 minutes between repeats
 
 # Similarity thresholds for duplicate detection
 SIMILARITY_THRESHOLD = 0.6
@@ -61,7 +67,7 @@ FIRESTORE_BATCH_WRITE_LIMIT = int(os.environ.get("FIRESTORE_BATCH_WRITE_LIMIT", 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 # NewsAPI.org configuration
-NEWSAPI_KEY = os.environ.get("NEWSAPI_KEY", "")
+NEWSAPI_KEY = os.environ.get("NEWSAPI_KEY") or os.environ.get("NEWS_API_KEY", "")
 
 # Article selection configuration
 USE_NEWSAPI_FOR_DISCOVERY = True  # Toggle to use NewsAPI.org for article discovery
@@ -91,6 +97,45 @@ R2_ENDPOINT_URL = f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 # Sports performance tuning
 MAX_SPORT_FETCH_WORKERS = int(os.environ.get("MAX_SPORT_FETCH_WORKERS", 4))
 SPORTS_NEWS_SUMMARY_CONCURRENCY = int(os.environ.get("SPORTS_NEWS_SUMMARY_CONCURRENCY", 3))
+
+# ESPN sports discovery and enrichment configuration
+SPORTS_DISCOVERY = {
+    'enabled': os.environ.get("SPORTS_DISCOVERY_ENABLED", "true").lower() == "true",
+    'sports_whitelist': os.environ.get(
+        "SPORTS_DISCOVERY_SPORTS",
+        "football,basketball,baseball,hockey,soccer"
+    ).split(','),
+    'league_blacklist': os.environ.get(
+        "SPORTS_DISCOVERY_LEAGUE_BLACKLIST",
+        "football/cfl,football/xfl"
+    ).split(','),
+    'max_leagues_per_sport': int(os.environ.get("SPORTS_DISCOVERY_MAX_LEAGUES_PER_SPORT", 8)),
+    'cache_ttl_hours': int(os.environ.get("SPORTS_DISCOVERY_CACHE_TTL_HOURS", 12)),
+}
+
+SPORTS_SCOREBOARD_ENABLES = os.environ.get(
+    "SPORTS_SCOREBOARD_ENABLES",
+    "linescores,leaders,statistics,probabilities,gameInfo,broadcasts,odds,situation"
+).split(',')
+
+SPORTS_ENRICHMENT = {
+    'enabled': os.environ.get("SPORTS_ENRICHMENT_ENABLED", "true").lower() == "true",
+    'pre_event_window_hours': int(os.environ.get("SPORTS_ENRICHMENT_PRE_WINDOW", 72)),
+    'post_event_window_hours': int(os.environ.get("SPORTS_ENRICHMENT_POST_WINDOW", 12)),
+    'max_workers': int(os.environ.get("SPORTS_ENRICHMENT_WORKERS", 4)),
+    'team_enable_params': os.environ.get(
+        "SPORTS_TEAM_ENABLE_PARAMS",
+        "roster,projection,stats,depthchart"
+    ),
+    'max_recent_plays': int(os.environ.get("SPORTS_ENRICHMENT_MAX_PLAYS", 6)),
+    'max_recent_drives': int(os.environ.get("SPORTS_ENRICHMENT_MAX_DRIVES", 2)),
+    'max_odds_snapshots': int(os.environ.get("SPORTS_ENRICHMENT_MAX_ODDS", 3)),
+}
+
+SPORTS_NEWS_SETTINGS = {
+    'enabled': os.environ.get("SPORTS_LEAGUE_NEWS_ENABLED", "true").lower() == "true",
+    'limit': int(os.environ.get("SPORTS_LEAGUE_NEWS_LIMIT", 5)),
+}
 
 # Image optimization configuration
 IMAGE_OPTIMIZATION = {
@@ -138,9 +183,8 @@ if not R2_SECRET_ACCESS_KEY:
     r2_missing_vars.append("R2_SECRET_ACCESS_KEY")
 
 if missing_vars:
-    print(f"Error: Missing required environment variables: {', '.join(missing_vars)}")
-    print("Please set these environment variables before running the application.")
-    sys.exit(1)
+    print(f"Warning: Missing environment variables: {', '.join(missing_vars)}")
+    print("Legacy pipelines may fail until these variables are set.")
 
 if r2_missing_vars:
     print(f"Warning: Missing R2 environment variables: {', '.join(r2_missing_vars)}")
@@ -214,28 +258,16 @@ DEFAULT_PROMPT = """Analyze these news articles and provide:
 BRIEF_GENERATION_CONFIG = {
     "temperature": 0.7,
     "top_p": 0.8,
-    "top_k": 40,
     "max_output_tokens": 2048,
-    "response_schema": content.Schema(
-        type=content.Type.OBJECT,
-        required=["BriefSummary", "BulletPoints"],
-        properties={
-            "BriefSummary": content.Schema(
-                type=content.Type.STRING,
-                description="1-2 sentence summary of the most crucial points"
-            ),
-            "BulletPoints": content.Schema(
-                type=content.Type.ARRAY,
-                items=content.Schema(
-                    type=content.Type.STRING,
-                    description="Short, concise bullet point"
-                ),
-                min_items=3,
-                max_items=5,
-            ),
-        },
-    ),
     "response_mime_type": "application/json",
+    "response_json_schema": {
+        "type": "object",
+        "properties": {
+            "BriefSummary": {"type": "string"},
+            "BulletPoints": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["BriefSummary", "BulletPoints"],
+    },
 }
 
 # Ensure data directories exist

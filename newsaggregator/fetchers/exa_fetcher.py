@@ -2,9 +2,9 @@
 
 from datetime import datetime, timedelta
 import json
+import os
 from exa_py import Exa
-import google.generativeai as genai
-from google.ai.generativelanguage_v1beta.types import content
+from google import genai
 
 from newsaggregator.config.settings import EXA_API_KEY, EXA_SEARCH_LIMIT, EXA_LOOKBACK_DAYS
 from newsaggregator.utils.retry import api_manager, smart_retry_with_backoff
@@ -16,6 +16,10 @@ class ExaFetcher:
     def __init__(self):
         """Initialize the Exa API client."""
         self.client = Exa(api_key=EXA_API_KEY)
+        api_key = os.environ.get("GEMINI_API_KEY") or api_manager.current_api_key
+        self.genai_client = genai.Client(api_key=api_key) if api_key else None
+        self.article_model = os.environ.get("BRIEFSNAP_ARTICLE_GEMINI_MODEL", "gemini-3-flash-preview")
+        self.fast_model = os.environ.get("BRIEFSNAP_FAST_GEMINI_MODEL", "gemini-3.1-flash-lite-preview")
         
     @smart_retry_with_backoff
     def fetch_detailed_article(self, story_title):
@@ -158,12 +162,6 @@ class ExaFetcher:
                 # Still no results, generate content with Gemini but without reference articles
                 print(f"[WARNING] No search results found, generating article without references")
                 
-                # Initialize Gemini
-                # API manager handles configuration automatically
-                model = genai.GenerativeModel(
-                    model_name="gemini-2.5-flash-preview-05-20",
-                )
-                
                 prompt = f"""
                 Write a comprehensive news article about "{story_title}".
                 The article should be factual, well-structured, and written in an engaging journalistic style.
@@ -171,8 +169,7 @@ class ExaFetcher:
                 """
                 
                 print(f"[INFO] Generating article with Gemini for: {story_title}")
-                response = model.generate_content(prompt)
-                article_text = response.text.strip() if response and hasattr(response, 'text') else ''
+                article_text = self._generate_text(prompt, self.article_model)
                 if not article_text or not article_text.strip():
                     print(f"[WARNING] Skipping generated article with empty text for: {story_title}")
                     return '', [], best_image_url, '', []
@@ -198,12 +195,6 @@ class ExaFetcher:
             # Use Gemini to create article from the search results
             combined_text = "\n\n---\n\n".join(article_contents)
             
-            # Initialize Gemini
-            # API manager handles configuration automatically
-            model = genai.GenerativeModel(
-                model_name="gemini-2.5-flash-preview-05-20",
-            )
-            
             prompt = f"""
             Based on the following news sources about "{story_title}", create a comprehensive news article. 
             The article should be factual, balanced, well-structured, and written in an engaging journalistic style.
@@ -216,8 +207,7 @@ class ExaFetcher:
             """
             
             print(f"[INFO] Generating article with Gemini for: {story_title}")
-            response = model.generate_content(prompt)
-            article_text = response.text.strip()
+            article_text = self._generate_text(prompt, self.article_model)
 
             # Generate summary and key points for the article
             summary = ""
@@ -242,6 +232,17 @@ class ExaFetcher:
             import traceback
             traceback.print_exc()
             return "", [], None, "", []
+
+    def _generate_text(self, prompt, model_name):
+        if not self.genai_client:
+            print("[WARN] Gemini client unavailable; skipping generated text")
+            return ""
+        response = self.genai_client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+            config={"temperature": 0.5},
+        )
+        return response.text.strip() if response and response.text else ""
             
     @smart_retry_with_backoff
     def _generate_summary(self, article_text):
@@ -254,31 +255,21 @@ class ExaFetcher:
             Summary text
         """
         print("[INFO] Generating article summary")
-        # API manager handles configuration automatically
-
-        # Use structured output with schema for consistent formatting
         generation_config = {
             "temperature": 0.7,
-            "top_p": 0.9,
-            "top_k": 40,
             "max_output_tokens": 500,
-            "response_schema": content.Schema(
-                type=content.Type.OBJECT,
-                properties={
-                    "summary": content.Schema(
-                        type=content.Type.STRING,
-                        description="A concise 2-3 sentence summary of the article"
-                    )
-                },
-                required=["summary"]
-            ),
             "response_mime_type": "application/json",
+            "response_json_schema": {
+                "type": "object",
+                "properties": {
+                    "summary": {
+                        "type": "string",
+                        "description": "A concise 2-3 sentence summary of the article",
+                    }
+                },
+                "required": ["summary"],
+            },
         }
-
-        model = genai.GenerativeModel(
-            model_name="gemini-2.0-flash-lite",
-            generation_config=generation_config
-        )
 
         prompt = f"""
         Generate a concise summary (2-3 sentences) of the following article.
@@ -288,7 +279,13 @@ class ExaFetcher:
         {article_text}
         """
 
-        response = model.generate_content(prompt)
+        if not self.genai_client:
+            return ""
+        response = self.genai_client.models.generate_content(
+            model=self.fast_model,
+            contents=prompt,
+            config=generation_config,
+        )
 
         # Parse the response as JSON
         result = json.loads(response.text)
@@ -310,35 +307,22 @@ class ExaFetcher:
             List of key points
         """
         print("[INFO] Generating article key points")
-        # API manager handles configuration automatically
-
-        # Use structured output with schema for consistent formatting
         generation_config = {
             "temperature": 0.7,
-            "top_p": 0.9,
-            "top_k": 40,
             "max_output_tokens": 1000,
-            "response_schema": content.Schema(
-                type=content.Type.OBJECT,
-                properties={
-                    "key_points": content.Schema(
-                        type=content.Type.ARRAY,
-                        description="3-4 key points extracted from the article",
-                        items=content.Schema(
-                            type=content.Type.STRING,
-                            description="A concise, clear key point from the article"
-                        )
-                    )
-                },
-                required=["key_points"]
-            ),
             "response_mime_type": "application/json",
+            "response_json_schema": {
+                "type": "object",
+                "properties": {
+                    "key_points": {
+                        "type": "array",
+                        "description": "3-4 key points extracted from the article",
+                        "items": {"type": "string"},
+                    }
+                },
+                "required": ["key_points"],
+            },
         }
-
-        model = genai.GenerativeModel(
-            model_name="gemini-2.0-flash-lite",
-            generation_config=generation_config
-        )
 
         prompt = f"""
         Extract 3-4 key points from the following article.
@@ -349,7 +333,13 @@ class ExaFetcher:
         {article_text}
         """
 
-        response = model.generate_content(prompt)
+        if not self.genai_client:
+            return []
+        response = self.genai_client.models.generate_content(
+            model=self.fast_model,
+            contents=prompt,
+            config=generation_config,
+        )
 
         # Parse the response as JSON
         result = json.loads(response.text)

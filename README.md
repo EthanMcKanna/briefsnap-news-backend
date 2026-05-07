@@ -1,18 +1,16 @@
 # Briefsnap News Backend
 
-A modular and efficient system for aggregating, processing, and summarizing news articles from various sources.
+A modern, lightweight system for gathering current news and publishing one polished BriefSnap daily brief.
 
 ## Features
 
 ### News Aggregation
-- Fetches news from multiple RSS feeds by topic
-- Extracts content using newspaper3k
-- Generates summaries using Google's Gemini AI
-- Stores articles locally in files and remotely in Firestore
-- Detects duplicate content using similarity metrics
-- Enriches articles with additional content from Exa API
-- Sends notifications via Firebase Cloud Messaging
-- Automated processing via GitHub Actions twice daily (7am and 5pm Central Time)
+- Fetches a compact, source-diverse packet from Google News RSS, topical RSS queries, and optional NewsAPI
+- Extracts useful article text using the existing newspaper3k extractor
+- Generates one structured daily brief using `google-genai` and current Gemini 3.x models
+- Uses Google Search and URL context grounding during brief generation
+- Writes local JSON artifacts and publishes to Firestore collections consumed by the iOS app
+- Keeps the legacy rotating pipeline available behind `BRIEFSNAP_LEGACY_PIPELINE=true`
 
 ### Smart Rate Limit Handling
 - Intelligent retry logic that respects Gemini API rate limits
@@ -84,7 +82,7 @@ The sports aggregator runs automatically every hour during active times for live
 **New Feature**: The sports aggregator now includes **automatic game summaries** that generate:
 - **Pre-game summaries** for games happening within 24 hours
 - **Post-game summaries** for recently finished games
-- Uses Gemini Flash 2 Lite with Google Search for real-time analysis
+- Uses current Gemini 3 Flash models with Google Search for real-time analysis
 - Smart deduplication ensures summaries are only generated once per game
 
 Both systems can also be triggered manually through the GitHub Actions interface.
@@ -98,6 +96,11 @@ All configuration is stored in `newsaggregator/config/settings.py`. You can modi
 - API keys and parameters
 - Storage paths and file formats
 - Similarity thresholds for duplicate detection
+- Continuous aggregation controls:
+  - `CONTINUOUS_AGGREGATION` toggles multi-cycle runs per invocation (default: true)
+  - `MAX_RUN_CYCLES` caps how many cycles run before exiting (default: 6)
+  - `TOPICS_PER_CYCLE` limits how many topics are sampled per cycle (default: 2)
+  - `TOPIC_COOLDOWN_SECONDS` forces a cooldown before the same topic is reprocessed (default: 90 minutes)
 
 ## Data Storage
 
@@ -120,7 +123,7 @@ For detailed sports system documentation, see [SPORTS_README.md](SPORTS_README.m
 - `requests`: HTTP requests
 - `feedparser`: RSS feed parsing
 - `newspaper3k`: Article extraction
-- `google-generativeai`: Gemini AI integration
+- `google-genai`: Gemini API integration
 - `firebase-admin`: Firebase/Firestore integration
 - `beautifulsoup4`: HTML parsing
 - `exa-py`: Exa API integration

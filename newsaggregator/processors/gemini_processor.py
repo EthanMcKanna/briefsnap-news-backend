@@ -1,8 +1,8 @@
 """Gemini API processor for generating summaries and articles."""
 
 import json
-import google.generativeai as genai
-from google.ai.generativelanguage_v1beta.types import content
+import os
+from google import genai
 
 from newsaggregator.utils.retry import smart_retry_with_backoff, api_manager
 from newsaggregator.config.settings import (
@@ -18,10 +18,11 @@ class GeminiProcessor:
     
     def __init__(self):
         """Initialize the Gemini API client."""
-        self.configure_gemini()
-        self.chat_session = None
-        self.brief_chat_session = None
-        self.weekly_chat_session = None
+        api_key = os.environ.get("GEMINI_API_KEY") or api_manager.current_api_key
+        self.client = genai.Client(api_key=api_key) if api_key else None
+        self.summary_model = os.environ.get("BRIEFSNAP_SUMMARY_GEMINI_MODEL", "gemini-3-flash-preview")
+        self.brief_model = os.environ.get("BRIEFSNAP_FAST_GEMINI_MODEL", "gemini-3.1-flash-lite-preview")
+        self.weekly_model = os.environ.get("BRIEFSNAP_WEEKLY_GEMINI_MODEL", "gemini-3-flash-preview")
         
         # Initialize NewsAPI fetcher for headlines context
         self.newsapi_fetcher = None
@@ -44,54 +45,29 @@ class GeminiProcessor:
         Returns:
             Gemini chat session
         """
-        if self.chat_session:
-            return self.chat_session
-            
-        generation_config = {
-            "temperature": 1.5,
-            "top_p": 0.95,
-            "top_k": 40,
+        return {
+            "temperature": 0.7,
             "max_output_tokens": 8192,
-            "response_schema": content.Schema(
-                type=content.Type.OBJECT,
-                required=["Summary", "Stories"],
-                properties={
-                    "Stories": content.Schema(
-                        type=content.Type.ARRAY,
-                        items=content.Schema(
-                            type=content.Type.OBJECT,
-                            required=["StoryTitle", "StoryDescription"],
-                            properties={
-                                "StoryTitle": content.Schema(
-                                    type=content.Type.STRING,
-                                ),
-                                "StoryDescription": content.Schema(
-                                    type=content.Type.STRING,
-                                ),
-                            },
-                        ),
-                    ),
-                    "Summary": content.Schema(
-                        type=content.Type.STRING,
-                    ),
-                },
-            ),
             "response_mime_type": "application/json",
+            "response_json_schema": {
+                "type": "object",
+                "properties": {
+                    "Summary": {"type": "string"},
+                    "Stories": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "StoryTitle": {"type": "string"},
+                                "StoryDescription": {"type": "string"},
+                            },
+                            "required": ["StoryTitle", "StoryDescription"],
+                        },
+                    },
+                },
+                "required": ["Summary", "Stories"],
+            },
         }
-        
-        model = genai.GenerativeModel(
-            model_name="gemini-2.5-flash-preview-05-20",
-            generation_config=generation_config,
-            safety_settings=[
-                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-            ]
-        )
-        
-        self.chat_session = model.start_chat()
-        return self.chat_session
     
     def setup_brief_gemini(self):
         """Configure and return Gemini model for brief summaries.
@@ -99,22 +75,7 @@ class GeminiProcessor:
         Returns:
             Gemini chat session for brief summaries
         """
-        if self.brief_chat_session:
-            return self.brief_chat_session
-            
-        model = genai.GenerativeModel(
-            model_name="gemini-2.0-flash-lite",
-            generation_config=BRIEF_GENERATION_CONFIG,
-            safety_settings=[
-                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-            ]
-        )
-        
-        self.brief_chat_session = model.start_chat()
-        return self.brief_chat_session
+        return BRIEF_GENERATION_CONFIG
     
     def get_trending_headlines_context(self, topic):
         """Get trending headlines from NewsAPI to provide context for summary generation.
@@ -252,11 +213,16 @@ class GeminiProcessor:
         News Articles:
         {content_escaped}"""
 
-        # Initialize chat session if needed
-        chat_session = self.setup_gemini()
+        if not self.client:
+            raise RuntimeError("GEMINI_API_KEY is required for summary generation")
 
+        generation_config = self.setup_gemini()
         print(f"INFO: Sending request to Gemini API for topic: {topic}")
-        response = chat_session.send_message(prompt)
+        response = self.client.models.generate_content(
+            model=self.summary_model,
+            contents=prompt,
+            config=generation_config,
+        )
         print(f"INFO: Received response from Gemini API for topic: {topic}")
 
         # Parse the response
@@ -320,10 +286,14 @@ class GeminiProcessor:
 
         Format as JSON with exactly these fields."""
 
-        # Initialize brief chat session if needed
-        brief_chat = self.setup_brief_gemini()
+        if not self.client:
+            raise RuntimeError("GEMINI_API_KEY is required for brief generation")
 
-        response = brief_chat.send_message(prompt)
+        response = self.client.models.generate_content(
+            model=self.brief_model,
+            contents=prompt,
+            config=self.setup_brief_gemini(),
+        )
         return json.loads(response.text)
 
     def _merge_story_lists(self, primary_stories, chunk_summaries, limit=10):
@@ -374,65 +344,38 @@ class GeminiProcessor:
         print(f"INFO: Generating weekly summary for topic: {topic}")
         print(f"INFO: Content size for {topic}: {len(content_text)} characters")
 
-        # Setup weekly summary generation model
-        if not self.weekly_chat_session:
-            generation_config = {
-                "temperature": 1.0,
-                "top_p": 0.95,
-                "top_k": 40,
-                "max_output_tokens": 8192,
-                "response_schema": content.Schema(
-                    type=content.Type.OBJECT,
-                    required=["weekly_summary", "key_developments", "trending_topics"],
-                    properties={
-                        "weekly_summary": content.Schema(
-                            type=content.Type.STRING,
-                            description="A comprehensive 1-paragraph summary of the week's events"
-                        ),
-                        "key_developments": content.Schema(
-                            type=content.Type.ARRAY,
-                            description="8-10 key developments from the week",
-                            items=content.Schema(
-                                type=content.Type.OBJECT,
-                                required=["title", "description"],
-                                properties={
-                                    "title": content.Schema(
-                                        type=content.Type.STRING,
-                                        description="Short title for the development"
-                                    ),
-                                    "description": content.Schema(
-                                        type=content.Type.STRING,
-                                        description="1-2 sentence description of the development"
-                                    ),
-                                },
-                            ),
-                        ),
-                        "trending_topics": content.Schema(
-                            type=content.Type.ARRAY,
-                            description="5 trending topics or themes from the week",
-                            items=content.Schema(
-                                type=content.Type.STRING
-                            ),
-                        ),
+        generation_config = {
+            "temperature": 0.7,
+            "max_output_tokens": 8192,
+            "response_mime_type": "application/json",
+            "response_json_schema": {
+                "type": "object",
+                "properties": {
+                    "weekly_summary": {
+                        "type": "string",
+                        "description": "A comprehensive 1-paragraph summary of the week's events",
                     },
-                ),
-                "response_mime_type": "application/json",
-            }
-
-            print(f"INFO: Initializing weekly summary model for {topic}")
-            model = genai.GenerativeModel(
-                model_name="gemini-2.0-flash",
-                generation_config=generation_config,
-                safety_settings=[
-                    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-                    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-                    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-                    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-                ]
-            )
-
-            self.weekly_chat_session = model.start_chat()
-            print(f"INFO: Weekly summary model initialized for {topic}")
+                    "key_developments": {
+                        "type": "array",
+                        "description": "8-10 key developments from the week",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "title": {"type": "string"},
+                                "description": {"type": "string"},
+                            },
+                            "required": ["title", "description"],
+                        },
+                    },
+                    "trending_topics": {
+                        "type": "array",
+                        "description": "5 trending topics or themes from the week",
+                        "items": {"type": "string"},
+                    },
+                },
+                "required": ["weekly_summary", "key_developments", "trending_topics"],
+            },
+        }
 
         # Prepare prompt
         prompt = f"""Create a comprehensive weekly summary for the topic {topic} based on the
@@ -451,7 +394,13 @@ class GeminiProcessor:
         """
 
         print(f"INFO: Sending request to Gemini API for weekly summary of topic: {topic}")
-        response = self.weekly_chat_session.send_message(prompt)
+        if not self.client:
+            raise RuntimeError("GEMINI_API_KEY is required for weekly summary generation")
+        response = self.client.models.generate_content(
+            model=self.weekly_model,
+            contents=prompt,
+            config=generation_config,
+        )
         print(f"INFO: Received response from Gemini API for topic: {topic}")
 
         # Parse the response

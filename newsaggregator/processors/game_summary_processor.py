@@ -1,4 +1,4 @@
-"""Game summary processor using Gemini Flash 2 Lite with Google Search."""
+"""Game summary processor using current Gemini models with Google Search."""
 
 import os
 from typing import Dict, List, Optional, Tuple
@@ -9,14 +9,14 @@ from newsaggregator.storage.sports_storage import SportsStorage
 
 
 class GameSummaryProcessor:
-    """Class for generating pre-game and post-game summaries using Gemini Flash 2 Lite with Google Search."""
+    """Class for generating pre-game and post-game summaries using Gemini 3 Flash with Google Search."""
     
     def __init__(self):
         """Initialize the Gemini client."""
         self.client = genai.Client(
             api_key=os.environ.get("GEMINI_API_KEY"),
         )
-        self.model = "gemini-2.0-flash-lite"
+        self.model = os.environ.get("BRIEFSNAP_GAME_GEMINI_MODEL", "gemini-3-flash-preview")
         self.summary_index = {}
         
     def get_games_within_24_hours(self) -> List[Dict]:
