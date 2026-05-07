@@ -1008,42 +1008,72 @@ Preferred title, if useful: {requested_title or "none"}
 Generated at: {generated_at}
 """.strip()
 
+        configs = (
+            (
+                GROUNDING_MODEL,
+                {
+                    "tools": [{"google_search": {}}],
+                    "response_mime_type": "application/json",
+                    "response_json_schema": CUSTOM_WIDGET_SCHEMA,
+                    "max_output_tokens": 2048,
+                    "temperature": 0.25,
+                },
+                "search-grounded",
+            ),
+            (
+                DEFAULT_MODEL,
+                {
+                    "tools": [{"google_search": {}}],
+                    "max_output_tokens": 2048,
+                    "temperature": 0.25,
+                },
+                "search-grounded-text",
+            ),
+            (
+                DEFAULT_MODEL,
+                {
+                    "response_mime_type": "application/json",
+                    "response_json_schema": CUSTOM_WIDGET_SCHEMA,
+                    "max_output_tokens": 2048,
+                    "temperature": 0.25,
+                },
+                "source-packet",
+            ),
+        )
+
         last_error: Exception | None = None
-        for attempt in range(1, 4):
-            try:
-                response = client.models.generate_content(
-                    model=DEFAULT_MODEL,
-                    contents=widget_prompt,
-                    config={
-                        "tools": [{"google_search": {}}],
-                        "response_mime_type": "application/json",
-                        "response_json_schema": CUSTOM_WIDGET_SCHEMA,
-                        "max_output_tokens": 2048,
-                        "temperature": 0.25,
-                    },
-                )
-                payload = self._parse_json_response(response.text)
-                title = str(payload.get("title") or requested_title or prompt[:48]).strip()
-                summary = str(payload.get("summary") or "").strip()
-                items = [
-                    str(item).strip()
-                    for item in payload.get("items", [])
-                    if str(item).strip()
-                ][:5]
-                if not summary and not items:
-                    raise RuntimeError("Gemini returned an empty custom widget")
-                return {
-                    "topic": "CUSTOM",
-                    "title": title[:80],
-                    "summary": summary[:400],
-                    "items": items,
-                    "prompt": prompt,
-                    "model_used": f"{DEFAULT_MODEL}-search-grounded",
-                }
-            except Exception as exc:
-                last_error = exc
-                if attempt < 3:
-                    time.sleep(2 * attempt)
+        for model, config, mode in configs:
+            for attempt in range(1, 3):
+                try:
+                    response = client.models.generate_content(
+                        model=model,
+                        contents=widget_prompt,
+                        config=config,
+                    )
+                    payload = self._parse_json_response(response.text)
+                    title = str(payload.get("title") or requested_title or prompt[:48]).strip()
+                    summary = str(payload.get("summary") or "").strip()
+                    items = [
+                        str(item).strip()
+                        for item in payload.get("items", [])
+                        if str(item).strip()
+                    ][:5]
+                    if not summary and not items:
+                        raise RuntimeError("Gemini returned an empty custom widget")
+                    return {
+                        "topic": "CUSTOM",
+                        "title": title[:80],
+                        "summary": summary[:400],
+                        "items": items,
+                        "prompt": prompt,
+                        "model_used": f"{model}-{mode}",
+                    }
+                except Exception as exc:
+                    last_error = exc
+                    if attempt < 2 and self._should_retry_generation(exc):
+                        time.sleep(2 * attempt)
+                        continue
+                    break
 
         raise RuntimeError(f"Gemini custom widget failed after retries: {last_error}")
 
