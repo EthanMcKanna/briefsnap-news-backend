@@ -426,25 +426,29 @@ class DailyBriefPipeline:
 
         last_error: Exception | None = None
         grounded_config = {
-            "tools": [{"google_search": {}}, {"url_context": {}}],
+            "tools": [{"google_search": {}}],
             "response_mime_type": "application/json",
             "response_json_schema": ARTICLE_SCHEMA,
             "max_output_tokens": 8192,
             "temperature": 0.35,
         }
         for model in models_to_try:
-            try:
-                print(f"Generating structured brief with {model}")
-                response = client.models.generate_content(
-                    model=model,
-                    contents=prompt,
-                    config=grounded_config,
-                )
-                payload = json.loads(response.text)
-                return self._normalize_brief(payload, articles, model)
-            except Exception as exc:
-                print(f"[WARN] Gemini model {model} failed: {exc}")
-                last_error = exc
+            for attempt in range(1, 3):
+                try:
+                    print(f"Generating search-grounded structured brief with {model} (attempt {attempt})")
+                    response = client.models.generate_content(
+                        model=model,
+                        contents=prompt,
+                        config=grounded_config,
+                    )
+                    payload = json.loads(response.text)
+                    return self._normalize_brief(payload, articles, f"{model}-search-grounded")
+                except Exception as exc:
+                    print(f"[WARN] Gemini search-grounded model {model} failed: {exc}")
+                    last_error = exc
+                    if attempt >= 2 or not self._should_retry_generation(exc):
+                        break
+                    time.sleep(4 * attempt)
 
         for model in (DEFAULT_MODEL, FAST_MODEL):
             try:
@@ -484,8 +488,7 @@ can show:
 
 Rules:
 - Use the supplied source packet as the main evidence.
-- Use Google Search and URL context to verify recency, importance, and any
-  fast-moving claim.
+- Use Google Search to verify recency, importance, and any fast-moving claim.
 - Do not invent URLs. Use article ids and URLs from the source packet when you
   select stories.
 - Keep the prose crisp and useful. No hype, no generic caveats.
@@ -724,6 +727,22 @@ Source packet:
                     preferred_order.get(item[0], len(preferred_order)),
                     -sum(article.score for article in item[1]),
                 ),
+            )
+        )
+
+    @staticmethod
+    def _should_retry_generation(exc: Exception) -> bool:
+        text = str(exc).upper()
+        return any(
+            marker in text
+            for marker in (
+                "UNAVAILABLE",
+                "RESOURCE_EXHAUSTED",
+                "DEADLINE_EXCEEDED",
+                "INTERNAL",
+                "503",
+                "504",
+                "429",
             )
         )
 

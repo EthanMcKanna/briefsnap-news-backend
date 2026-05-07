@@ -48,6 +48,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY || secrets.NEWS_API_KEY }}
           BRIEFSNAP_GEMINI_MODEL: gemini-3-flash-preview
+          BRIEFSNAP_GEMINI_TIMEOUT_MS: "45000"
         run: python main.py
         
       - name: Upload data
