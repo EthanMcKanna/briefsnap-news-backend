@@ -846,9 +846,11 @@ Source packet:
             return
 
         try:
+            from google.cloud.firestore_v1.base_query import FieldFilter
+
             requests_query = (
                 db.collection("custom_widget_requests")
-                .where("active", "==", True)
+                .where(filter=FieldFilter("active", "==", True))
                 .limit(self.options.max_custom_widget_requests)
                 .stream()
             )
