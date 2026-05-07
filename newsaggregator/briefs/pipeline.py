@@ -426,9 +426,10 @@ class DailyBriefPipeline:
 
         prompt = self._brief_prompt(articles)
         client = genai.Client(api_key=self.gemini_key)
-        models_to_try = [self.options.model]
-        if self.options.model != FALLBACK_MODEL:
-            models_to_try.append(FALLBACK_MODEL)
+        models_to_try = []
+        for model in (self.options.model, DEFAULT_MODEL, FALLBACK_MODEL, FAST_MODEL):
+            if model not in models_to_try:
+                models_to_try.append(model)
 
         last_error: Exception | None = None
         for model in models_to_try:
@@ -450,7 +451,8 @@ class DailyBriefPipeline:
                 print(f"[WARN] Gemini model {model} failed: {exc}")
                 last_error = exc
 
-        raise RuntimeError(f"Gemini brief generation failed: {last_error}")
+        print(f"[WARN] Gemini unavailable; publishing source-ranked fallback brief: {last_error}")
+        return self._fallback_brief(articles, model_used="source-ranked-fallback")
 
     def _brief_prompt(self, articles: list[ArticleCandidate]) -> str:
         records = [article.prompt_record() for article in articles]
