@@ -477,6 +477,34 @@ class DailyBriefPipeline:
                             break
                         time.sleep(4 * attempt)
 
+        grounded_text_config = {
+            "tools": [{"google_search": {}}],
+            "max_output_tokens": 8192,
+            "temperature": 0.25,
+        }
+        grounded_text_models = self._unique_models((self.options.model, DEFAULT_MODEL, FAST_MODEL))
+        for client_label, client in clients:
+            for model in grounded_text_models:
+                for prompt_label, source_prompt in (
+                    ("full", prompt),
+                    ("compact", self._brief_prompt(articles[:24], max_excerpt_chars=450)),
+                ):
+                    try:
+                        print(
+                            "Generating search-grounded text JSON brief "
+                            f"with {model} via {client_label} ({prompt_label})"
+                        )
+                        response = client.models.generate_content(
+                            model=model,
+                            contents=source_prompt,
+                            config=grounded_text_config,
+                        )
+                        payload = self._parse_json_response(response.text)
+                        return self._normalize_brief(payload, articles, f"{model}-search-grounded-text")
+                    except Exception as exc:
+                        print(f"[WARN] Gemini search-grounded text model {model} via {client_label} failed: {exc}")
+                        last_error = exc
+
         source_config = {
             "response_mime_type": "application/json",
             "response_json_schema": ARTICLE_SCHEMA,
@@ -504,8 +532,6 @@ class DailyBriefPipeline:
                     except Exception as exc:
                         print(f"[WARN] Gemini source-packet model {model} via {client_label} failed: {exc}")
                         last_error = exc
-                        if not self._should_retry_generation(exc):
-                            break
 
         message = f"Gemini unavailable after all configured models; refusing to publish fallback brief: {last_error}"
         if not self.options.allow_fallback_publish:
