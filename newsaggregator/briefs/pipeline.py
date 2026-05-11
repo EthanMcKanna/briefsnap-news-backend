@@ -16,7 +16,7 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
@@ -38,6 +38,13 @@ DEFAULT_MODEL = "gemini-2.5-flash"
 GROUNDING_MODEL = "gemini-3-flash-preview"
 QUALITY_MODEL = "gemini-3.1-pro-preview"
 FAST_MODEL = "gemini-2.5-flash-lite"
+
+SPORT_SCORE_ENDPOINTS: tuple[tuple[str, str], ...] = (
+    ("NBA", "basketball/nba"),
+    ("MLB", "baseball/mlb"),
+    ("NHL", "hockey/nhl"),
+    ("MLS", "soccer/usa.1"),
+)
 
 ARTICLE_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -261,6 +268,7 @@ class DailyBriefPipeline:
         ]
         self.gemini_key = self.gemini_keys[0] if self.gemini_keys else None
         self.today_id = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        self.sports_score_cards: list[dict[str, Any]] = []
 
     def run(self) -> dict[str, Any]:
         start = time.time()
@@ -272,10 +280,21 @@ class DailyBriefPipeline:
         if not articles:
             raise RuntimeError("No article candidates survived discovery and extraction")
 
+        self.sports_score_cards = self._fetch_top_sports_scores()
+        print(f"Sports scores: selected {len(self.sports_score_cards)} game(s)")
+
         if self.options.dry_run:
             brief = self._fallback_brief(articles, model_used="dry-run")
         else:
             brief = self.generate_brief(articles)
+
+        quality_issues = self._brief_quality_issues(brief)
+        if quality_issues:
+            print("[WARN] Daily brief quality issues:")
+            for issue in quality_issues:
+                print(f"  - {issue}")
+            if not self.options.dry_run:
+                raise RuntimeError("Daily brief quality gate failed: " + "; ".join(quality_issues))
 
         artifact_path = self.write_artifact(brief)
         if self.options.publish and not self.options.dry_run:
@@ -561,12 +580,21 @@ Rules:
 - Keep the prose crisp and useful. No hype, no generic caveats.
 - Prefer US relevance for TOP_NEWS, but preserve important world context.
 - The response must match the JSON schema exactly.
+- Return sections for TOP_NEWS, BUSINESS, SPORTS, and any other category with
+  genuinely strong source support.
+- Each section's story_ids must point to distinct story objects in the stories
+  array. TOP_NEWS needs at least three separate stories, not one blended recap.
+- For SPORTS, incorporate the sports score packet when live or final games are
+  present.
 - Return at least five custom_widgets when the source packet supports them.
 
 Generated at: {generated_at}
 
 Source packet:
 {json.dumps(records, ensure_ascii=False)}
+
+Sports score packet:
+{json.dumps(self.sports_score_cards, ensure_ascii=False)}
 """.strip()
 
     def _gemini_clients(self) -> list[tuple[str, Any]]:
@@ -677,6 +705,7 @@ Source packet:
             "sections": sections,
             "custom_widgets": widgets,
             "stories": normalized_stories[:18],
+            "sports_scores": self.sports_score_cards[:6],
             "source_count": len(articles),
         }
         return brief
@@ -710,6 +739,7 @@ Source packet:
             "sections": self._normalize_sections([], stories, articles),
             "custom_widgets": self._normalize_widgets([], stories, articles),
             "stories": stories,
+            "sports_scores": self.sports_score_cards[:6],
             "source_count": len(articles),
         }
 
@@ -721,20 +751,23 @@ Source packet:
     ) -> list[dict[str, Any]]:
         sections: list[dict[str, Any]] = []
         seen_topics: set[str] = set()
+        valid_story_ids = {str(story.get("id")) for story in stories if story.get("id")}
 
         if isinstance(raw_sections, list):
             for section in raw_sections:
                 if not isinstance(section, dict):
                     continue
-                topic = str(section.get("topic") or "").strip()
+                topic = self._normalize_topic(section.get("topic"))
                 title = str(section.get("title") or "").strip()
                 summary = str(section.get("summary") or "").strip()
                 why_it_matters = str(section.get("why_it_matters") or "").strip()
                 story_ids = [
                     str(story_id)
                     for story_id in section.get("story_ids", [])
-                    if str(story_id).strip()
+                    if str(story_id).strip() and str(story_id).strip() in valid_story_ids
                 ]
+                if not story_ids:
+                    story_ids = self._story_ids_for_topic(topic, stories, limit=4)
                 if not topic or (not summary and not why_it_matters):
                     continue
                 if topic in seen_topics:
@@ -750,12 +783,33 @@ Source packet:
                 )
                 seen_topics.add(topic)
                 if len(sections) >= 7:
-                    return sections
+                    break
+
+        if self.sports_score_cards and "SPORTS" not in seen_topics:
+            sports_story_ids = [
+                story["id"]
+                for story in stories
+                if self._normalize_topic(story.get("topic")) == "SPORTS" and story.get("id")
+            ][:4]
+            sections.append(
+                {
+                    "topic": "SPORTS",
+                    "title": "Sports",
+                    "summary": " • ".join(score["display"] for score in self.sports_score_cards[:3]),
+                    "why_it_matters": "Live and final scoreboard context from ESPN.",
+                    "story_ids": sports_story_ids,
+                }
+            )
+            seen_topics.add("SPORTS")
 
         for topic, group in self._topic_article_groups(articles).items():
             if topic in seen_topics or not group:
                 continue
-            related_stories = [story for story in stories if story.get("topic") == topic]
+            related_stories = [
+                story
+                for story in stories
+                if self._normalize_topic(story.get("topic")) == topic
+            ]
             story_ids = [story["id"] for story in related_stories[:4] if story.get("id")]
             if not story_ids:
                 story_ids = [article.id for article in group[:4]]
@@ -772,7 +826,198 @@ Source packet:
             if len(sections) >= 7:
                 break
 
-        return sections
+        return sections[:8]
+
+    def _fetch_top_sports_scores(self) -> list[dict[str, Any]]:
+        today = datetime.now(timezone.utc)
+        dates = [
+            (today - timedelta(days=1)).strftime("%Y%m%d"),
+            today.strftime("%Y%m%d"),
+        ]
+        games: list[dict[str, Any]] = []
+
+        for league, path in SPORT_SCORE_ENDPOINTS:
+            for date in dates:
+                url = f"https://site.api.espn.com/apis/site/v2/sports/{path}/scoreboard"
+                try:
+                    response = self.session.get(url, params={"dates": date, "limit": 80}, timeout=10)
+                    response.raise_for_status()
+                    payload = response.json()
+                except Exception as exc:
+                    print(f"[WARN] ESPN scoreboard fetch failed for {league} {date}: {exc}")
+                    continue
+
+                for event in payload.get("events", []) or []:
+                    parsed = self._parse_score_event(league, event)
+                    if parsed:
+                        games.append(parsed)
+
+        deduped: dict[str, dict[str, Any]] = {}
+        for game in games:
+            deduped[game["id"]] = game
+
+        return sorted(
+            deduped.values(),
+            key=lambda game: (game["rank"], -(game.get("timestamp") or 0)),
+        )[:6]
+
+    @staticmethod
+    def _parse_score_event(league: str, event: dict[str, Any]) -> dict[str, Any] | None:
+        competitions = event.get("competitions") or []
+        if not competitions:
+            return None
+
+        status = (event.get("status") or {}).get("type") or {}
+        state = status.get("state") or ""
+        completed = bool(status.get("completed"))
+        detail = status.get("shortDetail") or status.get("detail") or status.get("description") or "Scheduled"
+        competition = competitions[0]
+        competitors = competition.get("competitors") or []
+
+        home = next((item for item in competitors if item.get("homeAway") == "home"), None)
+        away = next((item for item in competitors if item.get("homeAway") == "away"), None)
+        if not home or not away:
+            return None
+
+        def team(item: dict[str, Any]) -> dict[str, Any]:
+            team_data = item.get("team") or {}
+            raw_score = item.get("score")
+            score = int(raw_score) if str(raw_score).isdigit() else None
+            return {
+                "name": team_data.get("displayName") or team_data.get("name") or "",
+                "abbreviation": team_data.get("abbreviation") or "",
+                "score": score,
+                "winner": item.get("winner"),
+            }
+
+        home_team = team(home)
+        away_team = team(away)
+        has_score = home_team["score"] is not None and away_team["score"] is not None
+        if state == "pre" and not has_score:
+            return None
+
+        if has_score:
+            display = (
+                f"{away_team['abbreviation'] or away_team['name']} {away_team['score']} at "
+                f"{home_team['abbreviation'] or home_team['name']} {home_team['score']}"
+            )
+        else:
+            display = f"{away_team['name']} at {home_team['name']}"
+
+        if detail:
+            display = f"{display} ({detail})"
+
+        timestamp = None
+        if event.get("date"):
+            try:
+                timestamp = datetime.fromisoformat(event["date"].replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                timestamp = None
+
+        rank = 0 if state == "in" else 1 if completed or state == "post" else 2
+        raw_event_id = event.get("id") or hashlib.sha1(
+            f"{league}:{event.get('name')}:{event.get('date')}".encode("utf-8")
+        ).hexdigest()[:12]
+
+        return {
+            "id": f"{league.lower()}-{raw_event_id}",
+            "league": league,
+            "name": event.get("name") or f"{away_team['name']} at {home_team['name']}",
+            "status": detail,
+            "state": state,
+            "is_live": state == "in",
+            "is_final": completed or state == "post",
+            "home_team": home_team,
+            "away_team": away_team,
+            "display": display,
+            "timestamp": timestamp,
+            "rank": rank,
+        }
+
+    def _brief_quality_issues(self, brief: dict[str, Any]) -> list[str]:
+        issues: list[str] = []
+        model_used = str(brief.get("model_used") or "").lower()
+        stories = [story for story in brief.get("stories", []) if isinstance(story, dict)]
+        sections = [section for section in brief.get("sections", []) if isinstance(section, dict)]
+        valid_story_ids = {str(story.get("id")) for story in stories if story.get("id")}
+
+        if (model_used == "dry-run" or "fallback" in model_used) and not self.options.allow_fallback_publish:
+            issues.append(f"model_used is backup output ({brief.get('model_used')})")
+        if len(stories) < 6:
+            issues.append(f"only {len(stories)} stories normalized")
+
+        normalized_titles = {
+            re.sub(r"\W+", " ", str(story.get("title") or "").lower()).strip()
+            for story in stories
+            if story.get("title")
+        }
+        if len(normalized_titles) < min(6, len(stories)):
+            issues.append("stories are not distinct enough")
+        thin_summaries = [
+            story
+            for story in stories[:8]
+            if len(str(story.get("summary") or "").strip()) < 40
+        ]
+        if len(thin_summaries) > 2:
+            issues.append("too many leading stories have thin summaries")
+
+        headline = str(brief.get("headline") or "").strip().lower()
+        if not headline or headline in {"today's brief", "today's news", "top news"}:
+            issues.append("headline is generic")
+
+        section_topics = [self._normalize_topic(section.get("topic")) for section in sections]
+        if "TOP_NEWS" not in section_topics:
+            issues.append("missing TOP_NEWS section")
+
+        for section in sections:
+            topic = self._normalize_topic(section.get("topic"))
+            story_ids = [
+                str(story_id).strip()
+                for story_id in section.get("story_ids", [])
+                if str(story_id).strip()
+            ]
+            valid_refs = [story_id for story_id in story_ids if story_id in valid_story_ids]
+            if topic == "SPORTS" and self.sports_score_cards:
+                continue
+            if len(valid_refs) == 0:
+                issues.append(f"{topic or 'UNKNOWN'} section has no valid story_ids")
+
+        top_sections = [
+            section
+            for section in sections
+            if self._normalize_topic(section.get("topic")) == "TOP_NEWS"
+        ]
+        if top_sections:
+            top_refs = [
+                str(story_id).strip()
+                for story_id in top_sections[0].get("story_ids", [])
+                if str(story_id).strip() in valid_story_ids
+            ]
+            if len(top_refs) < 2:
+                issues.append("TOP_NEWS section needs at least two real story references")
+
+        if self.sports_score_cards and not brief.get("sports_scores"):
+            issues.append("sports scores were fetched but omitted from the brief")
+
+        return issues
+
+    @classmethod
+    def _story_ids_for_topic(
+        cls,
+        topic: str,
+        stories: list[dict[str, Any]],
+        limit: int = 4,
+    ) -> list[str]:
+        normalized_topic = cls._normalize_topic(topic)
+        if normalized_topic == "TOP_NEWS":
+            candidates = stories
+        else:
+            candidates = [
+                story
+                for story in stories
+                if cls._normalize_topic(story.get("topic")) == normalized_topic
+            ]
+        return [str(story["id"]) for story in candidates[:limit] if story.get("id")]
 
     def _normalize_widgets(
         self,
@@ -1313,6 +1558,10 @@ Generated at: {generated_at}
             if topic.code == code:
                 return topic.name
         return code.replace("_", " ").title()
+
+    @staticmethod
+    def _normalize_topic(value: Any) -> str:
+        return re.sub(r"\s+", "_", str(value or "").strip()).upper()
 
 
 def parse_args(argv: list[str] | None = None) -> PipelineOptions:
