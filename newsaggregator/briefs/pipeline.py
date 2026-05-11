@@ -768,6 +768,8 @@ Sports score packet:
                 ]
                 if not story_ids:
                     story_ids = self._story_ids_for_topic(topic, stories, limit=4)
+                if not story_ids:
+                    continue
                 if not topic or (not summary and not why_it_matters):
                     continue
                 if topic in seen_topics:
@@ -810,9 +812,9 @@ Sports score packet:
                 for story in stories
                 if self._normalize_topic(story.get("topic")) == topic
             ]
+            if not related_stories:
+                continue
             story_ids = [story["id"] for story in related_stories[:4] if story.get("id")]
-            if not story_ids:
-                story_ids = [article.id for article in group[:4]]
             sections.append(
                 {
                     "topic": topic,
