@@ -287,6 +287,31 @@ EDITORIAL_FILLER_PHRASES: tuple[str, ...] = (
     "it remains to be seen",
     "the situation is developing",
 )
+DANGLING_COPY_ENDINGS: set[str] = {
+    "a",
+    "an",
+    "and",
+    "another",
+    "as",
+    "at",
+    "because",
+    "but",
+    "by",
+    "for",
+    "from",
+    "in",
+    "into",
+    "of",
+    "on",
+    "or",
+    "over",
+    "the",
+    "to",
+    "under",
+    "while",
+    "with",
+    "without",
+}
 
 
 def _clean_text(value: Any) -> str:
@@ -303,20 +328,68 @@ def _word_count(value: Any) -> int:
 
 
 def _trim_words(value: Any, max_words: int) -> str:
-    text = _clean_text(value)
-    words = text.split()
-    if len(words) <= max_words:
-        return text
-    trimmed = " ".join(words[:max_words]).rstrip(" ,;:-")
-    return f"{trimmed}..."
+    text = _trim_text_naturally(value, max_words)
+    return text
 
 
 def _trim_words_plain(value: Any, max_words: int) -> str:
+    text = _trim_text_naturally(value, max_words)
+    return text
+
+
+def _trim_text_naturally(value: Any, max_words: int) -> str:
     text = _clean_text(value)
+    if not text:
+        return ""
+
+    text = _collapse_visible_truncation(text)
     words = text.split()
     if len(words) <= max_words:
+        return _strip_dangling_copy_ending(text)
+
+    natural = _natural_boundary_trim(text, max_words)
+    if natural:
+        return natural
+
+    trimmed = " ".join(words[:max_words]).rstrip(" ,;:-")
+    return _strip_dangling_copy_ending(trimmed)
+
+
+def _collapse_visible_truncation(text: str) -> str:
+    parts = [part.strip(" .") for part in re.split(r"\.{3,}|…", text) if part.strip(" .")]
+    if not parts:
         return text
-    return " ".join(words[:max_words]).rstrip(" ,;:-")
+    if _word_count(parts[0]) >= 5:
+        return parts[0]
+    return _clean_text(" ".join(parts))
+
+
+def _natural_boundary_trim(text: str, max_words: int) -> str:
+    best = ""
+    minimum_words = min(max(5, max_words // 2), max_words)
+    for match in re.finditer(r"([.!?])\s+|[,;:]\s+|\s+[–—-]\s+", text):
+        boundary_end = match.end(1) if match.group(1) else match.start()
+        candidate = text[:boundary_end].strip(" ,;:-")
+        word_count = _word_count(candidate)
+        if minimum_words <= word_count <= max_words:
+            best = candidate
+    if best:
+        return _strip_dangling_copy_ending(best)
+    return ""
+
+
+def _strip_dangling_copy_ending(text: str) -> str:
+    cleaned = _clean_text(text).rstrip(" ,;:-")
+    while cleaned:
+        words = cleaned.split()
+        if not words:
+            return ""
+        last_word = re.sub(r"[^a-z0-9']+", "", words[-1].lower())
+        if last_word in DANGLING_COPY_ENDINGS:
+            cleaned = " ".join(words[:-1]).rstrip(" ,;:-")
+            continue
+        break
+    return cleaned
 
 
 def _trim_items(items: Any, *, max_items: int, max_words: int) -> list[str]:
@@ -1295,28 +1368,48 @@ Sports score packet:
         stories: list[dict[str, Any]],
         grounding_texts: list[str] | None = None,
     ) -> tuple[str, str, str, list[str]]:
-        headline = _trim_words_plain(payload.get("headline") or "", 10)
-        dek = _trim_words(payload.get("dek") or "", 22)
-        summary = _trim_words(payload.get("summary") or "", 70)
+        raw_headline = payload.get("headline") or ""
+        raw_dek = payload.get("dek") or ""
+        raw_summary = payload.get("summary") or ""
+        headline = _trim_words_plain(raw_headline, 10)
+        dek = _trim_words(raw_dek, 22)
+        summary = _trim_words(raw_summary, 70)
         quick_hits = _trim_items(payload.get("quick_hits", []), max_items=6, max_words=14)
 
         derived_dek, derived_summary, derived_quick_hits = cls._top_level_copy_from_stories(stories)
-        if cls._is_generic_headline(headline) or not cls._copy_is_grounded_in_stories(
-            headline,
-            stories,
-            grounding_texts=grounding_texts,
+        if (
+            cls._is_generic_headline(headline)
+            or cls._is_unpolished_copy(headline)
+            or cls._has_visible_truncation(raw_headline)
+            or not cls._copy_is_grounded_in_stories(
+                headline,
+                stories,
+                grounding_texts=grounding_texts,
+            )
         ):
             headline = cls._headline_from_stories(stories)
-        if not dek or not cls._copy_is_grounded_in_stories(dek, stories, grounding_texts=grounding_texts):
+        if (
+            not dek
+            or cls._is_unpolished_copy(dek)
+            or cls._has_visible_truncation(raw_dek)
+            or not cls._copy_is_grounded_in_stories(dek, stories, grounding_texts=grounding_texts)
+        ):
             dek = derived_dek
-        if not summary or not cls._copy_is_grounded_in_stories(
-            summary,
-            stories,
-            grounding_texts=grounding_texts,
+        if (
+            not summary
+            or cls._is_unpolished_copy(summary)
+            or cls._has_visible_truncation(raw_summary)
+            or not cls._copy_is_grounded_in_stories(
+                summary,
+                stories,
+                grounding_texts=grounding_texts,
+            )
         ):
             summary = derived_summary
         if not quick_hits or any(
-            not cls._copy_is_grounded_in_stories(hit, stories, grounding_texts=grounding_texts)
+            cls._is_unpolished_copy(hit)
+            or cls._has_visible_truncation(hit)
+            or not cls._copy_is_grounded_in_stories(hit, stories, grounding_texts=grounding_texts)
             for hit in quick_hits
         ):
             quick_hits = derived_quick_hits
@@ -1362,7 +1455,7 @@ Sports score packet:
 
     @staticmethod
     def _ensure_sentence(value: str) -> str:
-        text = _clean_text(value).rstrip()
+        text = _collapse_visible_truncation(_clean_text(value)).rstrip()
         if not text:
             return ""
         if text[-1] in ".!?":
@@ -1432,6 +1525,25 @@ Sports score packet:
             "useful daily brief",
             "briefsnap daily brief",
         }
+
+    @staticmethod
+    def _has_visible_truncation(text: Any) -> bool:
+        return bool(re.search(r"\.{3,}|…", str(text or "")))
+
+    @staticmethod
+    def _is_unpolished_copy(text: Any) -> bool:
+        cleaned = _clean_text(text)
+        if not cleaned:
+            return True
+        if DailyBriefPipeline._has_visible_truncation(cleaned):
+            return True
+        if cleaned[-1:] in {",", ":", ";", "-", "–", "—"}:
+            return True
+        words = cleaned.split()
+        if not words:
+            return True
+        last_word = re.sub(r"[^a-z0-9']+", "", words[-1].lower())
+        return last_word in DANGLING_COPY_ENDINGS
 
     @staticmethod
     def _hero_image_url(stories: list[dict[str, Any]]) -> str | None:
@@ -1771,6 +1883,10 @@ Sports score packet:
                 for key in ("title", "summary", "why_it_matters")
             ):
                 issues.append(f"story {story_id} contains HTML entities")
+            if any(self._has_visible_truncation(story.get(key)) for key in ("title", "summary", "why_it_matters")):
+                issues.append(f"story {story_id} contains visible truncation")
+            if any(self._is_unpolished_copy(story.get(key)) for key in ("title", "summary", "why_it_matters")):
+                issues.append(f"story {story_id} has clipped copy")
 
         leading_domain_count = len(set(story_domains[: min(len(story_domains), 8)]))
         if len(stories) >= 8 and leading_domain_count < 4:
@@ -1810,6 +1926,10 @@ Sports score packet:
         ]
         if any("&nbsp;" in str(item) or "\xa0" in str(item) for item in top_level_copy if item):
             issues.append("top-level brief copy contains HTML entities")
+        if any(self._has_visible_truncation(item) for item in top_level_copy if item):
+            issues.append("top-level brief copy contains visible truncation")
+        if any(self._is_unpolished_copy(item) for item in top_level_copy if item):
+            issues.append("top-level brief copy has clipped phrasing")
         if any(
             not self._copy_is_grounded_in_stories(item, stories)
             for item in top_level_copy

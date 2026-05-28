@@ -596,6 +596,111 @@ def test_normalize_brief_repairs_unsupported_top_level_copy():
     assert brief["quick_hits"][0] == "Court ruling reshapes federal immigration enforcement"
 
 
+def test_normalize_brief_repairs_clipped_visible_copy():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    articles = [
+        ArticleCandidate(
+            id="kuwait",
+            topic="WORLD",
+            title="Kuwait says it faced a missile and drone attack, another challenge to Iran war's shaky ceasefire",
+            source="Reuters",
+            url="https://www.reuters.com/world/middle-east/kuwait-missile-drone-attack",
+            description="Kuwait's military announced a missile and drone attack on its territory Thursday, further destabilizing a shaky ceasefire in the region...",
+            image_url="https://static.reuters.com/images/kuwait-1200.jpg",
+        ),
+        ArticleCandidate(
+            id="temu",
+            topic="TOP_NEWS",
+            title="Chinese online retailer Temu hit with $232 million fine over illegal products",
+            source="AP News",
+            url="https://apnews.com/article/temu-eu-fine",
+            description="European regulators fined Temu after finding illegal products and consumer-safety failures across the platform.",
+            image_url="https://dims.apnews.com/dims4/default/temu-1200.jpg",
+        ),
+        ArticleCandidate(
+            id="cvs",
+            topic="HEALTH",
+            title="CVS to restore coverage of Zepbound and add Lilly obesity pill to drug plans",
+            source="CNBC",
+            url="https://www.cnbc.com/cvs-zepbound-coverage",
+            description="CVS will restore coverage for Zepbound and add a new obesity pill to standard drug plans.",
+        ),
+        ArticleCandidate(
+            id="trump-accounts",
+            topic="BUSINESS",
+            title="Financial app for managing Trump Accounts set to launch Thursday",
+            source="The Wall Street Journal",
+            url="https://www.wsj.com/business/trump-accounts-app",
+            description="A financial app is set to launch for families managing the new children savings accounts.",
+        ),
+        ArticleCandidate(
+            id="aws",
+            topic="BUSINESS",
+            title="Snowflake signs six billion dollar AWS deal for AI infrastructure",
+            source="CNBC",
+            url="https://www.cnbc.com/snowflake-aws-ai-deal",
+            description="Snowflake committed to a multiyear AWS agreement focused on AI infrastructure capacity.",
+        ),
+        ArticleCandidate(
+            id="sports",
+            topic="SPORTS",
+            title="NBA playoffs 2026 will decide Thunder-Spurs Game 6",
+            source="ESPN",
+            url="https://www.espn.com/nba/story/_/id/48891194/thunder-spurs-game-6",
+            description="The Thunder face the Spurs in Game 6 with a Finals berth still in reach.",
+        ),
+    ]
+    payload = {
+        "headline": "Kuwait says it faced a missile and drone attack, another",
+        "dek": (
+            "Kuwait says it faced a missile and drone attack, another challenge to Iran war's shaky "
+            "ceasefire leads alongside Chinese online retailer Temu..."
+        ),
+        "summary": (
+            "Kuwait's military announced a missile and drone attack on its territory Thursday, further "
+            "destabilizing a shaky ceasefire.... Chinese e-commerce giant Temu has been fined by the "
+            "European Union after investigators found the retailer failed..."
+        ),
+        "quick_hits": [
+            "Kuwait says it faced a missile and drone attack, another challenge to Iran war's",
+            "Chinese online retailer Temu hit with $232 million fine over illegal products",
+        ],
+        "stories": [
+            {
+                "id": article.id,
+                "topic": article.topic,
+                "title": article.title,
+                "source": article.source,
+                "summary": article.description,
+                "why_it_matters": "Readers get a concrete current consequence.",
+            }
+            for article in articles
+        ],
+        "sections": [],
+        "custom_widgets": [],
+    }
+
+    brief = pipeline._normalize_brief(payload, articles, "gemini-3-flash-preview-search-grounded")
+    visible_copy = " ".join(
+        [
+            brief["headline"],
+            brief["dek"],
+            brief["summary"],
+            " ".join(brief["quick_hits"]),
+            " ".join(story["summary"] for story in brief["stories"]),
+        ]
+    )
+
+    assert brief["headline"] == "Kuwait says it faced a missile and drone attack"
+    assert "..." not in visible_copy
+    assert "…" not in visible_copy
+    assert not any(
+        DailyBriefPipeline._is_unpolished_copy(item)
+        for item in [brief["headline"], brief["dek"], brief["summary"], *brief["quick_hits"]]
+    )
+    assert "visible truncation" not in " ".join(pipeline._brief_quality_issues(brief))
+
+
 def test_quality_gate_rejects_unsupported_top_level_named_entities():
     pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
     brief = valid_quality_brief()
@@ -607,6 +712,21 @@ def test_quality_gate_rejects_unsupported_top_level_named_entities():
     issues = pipeline._brief_quality_issues(brief)
 
     assert "top-level brief copy includes unsupported named entities" in issues
+
+
+def test_quality_gate_rejects_clipped_visible_copy():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    brief = valid_quality_brief()
+    brief["headline"] = "Kuwait says it faced a missile and drone attack, another"
+    brief["summary"] = "A concise summary starts well but trails off..."
+    brief["stories"][0]["summary"] = "A story summary starts with useful detail before it trails off..."
+
+    issues = pipeline._brief_quality_issues(brief)
+
+    assert "top-level brief copy contains visible truncation" in issues
+    assert "top-level brief copy has clipped phrasing" in issues
+    assert "story story-1 contains visible truncation" in issues
+    assert "story story-1 has clipped copy" in issues
 
 
 def test_feed_cleanup_removes_google_news_cluster_artifacts():
