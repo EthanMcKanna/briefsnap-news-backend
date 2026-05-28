@@ -118,10 +118,10 @@ def valid_quality_brief() -> dict:
     ]
     return {
         "model_used": "gemini-3-flash-preview-search-grounded",
-        "headline": "Federal ruling and markets lead the day",
-        "dek": "Short useful context.",
+        "headline": "First current story leads the day",
+        "dek": "First current story leads alongside Second current story.",
         "summary": "A concise summary with enough substance for the daily brief quality gate.",
-        "quick_hits": ["One current signal"],
+        "quick_hits": ["First current story"],
         "hero_image_url": "https://static.reuters.com/images/story-1.jpg",
         "stories": stories,
         "sections": [
@@ -225,10 +225,10 @@ def test_quality_gate_rejects_sports_scores_without_source_metadata():
 
     brief = {
         "model_used": "gemini-3-flash-preview-search-grounded",
-        "headline": "Federal ruling and markets lead the day",
-        "dek": "Short useful context.",
+        "headline": "First current story leads the day",
+        "dek": "First current story leads alongside Second current story.",
         "summary": "A concise summary with enough substance for the daily brief quality gate.",
-        "quick_hits": ["One current signal"],
+        "quick_hits": ["First current story"],
         "stories": [
             {
                 "id": "story-1",
@@ -320,6 +320,73 @@ def test_quality_gate_accepts_direct_sources_with_multimedia_and_sports_relevanc
     issues = pipeline._brief_quality_issues(valid_quality_brief())
 
     assert issues == []
+
+
+def test_normalize_brief_repairs_unsupported_top_level_copy():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    articles = article_candidates_for_normalization()
+    payload = {
+        "headline": "Biden audio lawsuit leads the day",
+        "dek": "President Biden audio releases overshadow several unrelated stories.",
+        "summary": (
+            "President Biden sued to block audio releases while unrelated policy fights "
+            "moved through Washington. The selected stories below do not actually cover "
+            "that claim, so the brief should ground itself in the normalized story list."
+        ),
+        "quick_hits": [
+            "President Biden sues to block audio releases",
+            "Court ruling reshapes federal immigration enforcement",
+        ],
+        "stories": [
+            {
+                "id": article.id,
+                "topic": article.topic,
+                "title": article.title,
+                "source": article.source,
+                "summary": article.description,
+                "why_it_matters": "Readers get a concrete current consequence.",
+            }
+            for article in articles
+        ],
+        "sections": [
+            {
+                "topic": "TOP_NEWS",
+                "title": "Top News",
+                "summary": "The top items.",
+                "why_it_matters": "They matter.",
+                "story_ids": ["story-1", "story-2"],
+            }
+        ],
+        "custom_widgets": [],
+    }
+
+    brief = pipeline._normalize_brief(payload, articles, "gemini-3-flash-preview-search-grounded")
+    top_level_copy = " ".join(
+        [
+            brief["headline"],
+            brief["dek"],
+            brief["summary"],
+            " ".join(brief["quick_hits"]),
+        ]
+    ).lower()
+
+    assert "biden" not in top_level_copy
+    assert "audio releases" not in top_level_copy
+    assert brief["headline"] == "Court ruling reshapes federal immigration enforcement"
+    assert brief["quick_hits"][0] == "Court ruling reshapes federal immigration enforcement"
+
+
+def test_quality_gate_rejects_unsupported_top_level_named_entities():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    brief = valid_quality_brief()
+    brief["summary"] = (
+        "President Biden sued to block audio releases while the displayed story list "
+        "covers only unrelated policy, markets, technology, world, and sports stories."
+    )
+
+    issues = pipeline._brief_quality_issues(brief)
+
+    assert "top-level brief copy includes unsupported named entities" in issues
 
 
 def test_quality_gate_rejects_google_wrappers_and_sparse_multimedia():

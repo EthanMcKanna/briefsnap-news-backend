@@ -132,6 +132,34 @@ SPORTS_SECTION_DRIFT_TERMS: tuple[str, ...] = (
     "celebrity",
 )
 
+TOP_LEVEL_COPY_ENTITY_STOPWORDS: set[str] = {
+    "a",
+    "an",
+    "and",
+    "as",
+    "at",
+    "briefsnap",
+    "by",
+    "for",
+    "from",
+    "in",
+    "it",
+    "its",
+    "news",
+    "of",
+    "on",
+    "or",
+    "president",
+    "senator",
+    "senators",
+    "the",
+    "to",
+    "u",
+    "us",
+    "usa",
+    "with",
+}
+
 MAX_ARTICLES_PER_DOMAIN = int(os.environ.get("BRIEFSNAP_MAX_ARTICLES_PER_DOMAIN", "3"))
 
 SPORT_SCORE_ENDPOINTS: tuple[tuple[str, str], ...] = (
@@ -831,6 +859,7 @@ Sports score packet:
     ) -> dict[str, Any]:
         article_by_id = {article.id: article for article in articles}
         story_ids = set()
+        selected_articles: dict[str, ArticleCandidate] = {}
         normalized_stories = []
 
         for story in payload.get("stories", []):
@@ -840,6 +869,7 @@ Sports score packet:
             if not source_article or source_article.id in story_ids:
                 continue
             story_ids.add(source_article.id)
+            selected_articles[source_article.id] = source_article
             image_url = self._story_image_url(source_article.image_url)
             normalized_stories.append(
                 {
@@ -861,6 +891,7 @@ Sports score packet:
                 if article.id in story_ids:
                     continue
                 story_ids.add(article.id)
+                selected_articles[article.id] = article
                 image_url = self._story_image_url(article.image_url)
                 normalized_stories.append(
                     {
@@ -885,16 +916,12 @@ Sports score packet:
         now = datetime.now(timezone.utc)
         sections = self._normalize_sections(payload.get("sections", []), normalized_stories, articles)
         widgets = self._normalize_widgets(payload.get("custom_widgets", []), normalized_stories, articles)
-
-        summary = _trim_words(payload.get("summary"), 70)
-        quick_hits = _trim_items(payload.get("quick_hits", []), max_items=6, max_words=14)
-        if not summary:
-            summary = _trim_words(" ".join(story["title"] for story in normalized_stories[:4]), 70)
-        if not quick_hits:
-            quick_hits = _trim_items([story["title"] for story in normalized_stories[:6]], max_items=6, max_words=14)
-        headline = _trim_words(payload.get("headline") or "", 10)
-        if self._is_generic_headline(headline):
-            headline = self._headline_from_stories(normalized_stories)
+        grounding_texts = self._selected_article_grounding_texts(selected_articles)
+        headline, dek, summary, quick_hits = self._grounded_top_level_copy(
+            payload=payload,
+            stories=normalized_stories,
+            grounding_texts=grounding_texts,
+        )
 
         score_cards = self.sports_score_cards[:6]
         brief = {
@@ -902,7 +929,7 @@ Sports score packet:
             "generated_at": now.isoformat(),
             "model_used": model_used,
             "headline": headline,
-            "dek": _trim_words(payload.get("dek"), 22),
+            "dek": dek,
             "summary": summary,
             "quick_hits": quick_hits,
             "hero_image_url": self._hero_image_url(normalized_stories),
@@ -1083,6 +1110,145 @@ Sports score packet:
         if candidate and ArticleFetcher._is_valid_image_url(candidate):
             return candidate
         return None
+
+    @staticmethod
+    def _selected_article_grounding_texts(
+        selected_articles: dict[str, ArticleCandidate],
+    ) -> list[str]:
+        return [
+            " ".join(
+                str(part or "")
+                for part in (
+                    article.title,
+                    article.description,
+                    article.content[:1200],
+                    article.source,
+                    article.url,
+                )
+            )
+            for article in selected_articles.values()
+        ]
+
+    @classmethod
+    def _grounded_top_level_copy(
+        cls,
+        *,
+        payload: dict[str, Any],
+        stories: list[dict[str, Any]],
+        grounding_texts: list[str] | None = None,
+    ) -> tuple[str, str, str, list[str]]:
+        headline = _trim_words(payload.get("headline") or "", 10)
+        dek = _trim_words(payload.get("dek") or "", 22)
+        summary = _trim_words(payload.get("summary") or "", 70)
+        quick_hits = _trim_items(payload.get("quick_hits", []), max_items=6, max_words=14)
+
+        derived_dek, derived_summary, derived_quick_hits = cls._top_level_copy_from_stories(stories)
+        if cls._is_generic_headline(headline) or not cls._copy_is_grounded_in_stories(
+            headline,
+            stories,
+            grounding_texts=grounding_texts,
+        ):
+            headline = cls._headline_from_stories(stories)
+        if not dek or not cls._copy_is_grounded_in_stories(dek, stories, grounding_texts=grounding_texts):
+            dek = derived_dek
+        if not summary or not cls._copy_is_grounded_in_stories(
+            summary,
+            stories,
+            grounding_texts=grounding_texts,
+        ):
+            summary = derived_summary
+        if not quick_hits or any(
+            not cls._copy_is_grounded_in_stories(hit, stories, grounding_texts=grounding_texts)
+            for hit in quick_hits
+        ):
+            quick_hits = derived_quick_hits
+
+        return headline, dek, summary, quick_hits
+
+    @classmethod
+    def _top_level_copy_from_stories(
+        cls,
+        stories: list[dict[str, Any]],
+    ) -> tuple[str, str, list[str]]:
+        titles = [_clean_text(story.get("title")) for story in stories if story.get("title")]
+        if len(titles) >= 2:
+            dek = _trim_words(f"{titles[0]} leads alongside {titles[1]}.", 22)
+        elif titles:
+            dek = _trim_words(titles[0], 22)
+        else:
+            dek = "A compact scan of today's strongest verified stories."
+
+        sentences: list[str] = []
+        for story in stories[:6]:
+            sentence = _clean_text(story.get("summary") or story.get("title"))
+            if not sentence:
+                continue
+            sentences.append(cls._ensure_sentence(sentence))
+            summary = _trim_words(" ".join(sentences), 70)
+            if _word_count(summary) >= 45:
+                break
+
+        summary = _trim_words(" ".join(sentences), 70)
+        if _word_count(summary) < 45 and titles:
+            title_sentences = [cls._ensure_sentence(title) for title in titles[:6]]
+            summary = _trim_words(" ".join(sentences + title_sentences), 70)
+        if not summary:
+            summary = _trim_words(" ".join(titles[:6]), 70)
+
+        quick_hits = _trim_items(titles, max_items=6, max_words=14)
+        return dek, summary, quick_hits
+
+    @staticmethod
+    def _ensure_sentence(value: str) -> str:
+        text = _clean_text(value).rstrip()
+        if not text:
+            return ""
+        if text[-1] in ".!?":
+            return text
+        return f"{text}."
+
+    @classmethod
+    def _copy_is_grounded_in_stories(
+        cls,
+        text: Any,
+        stories: list[dict[str, Any]],
+        *,
+        grounding_texts: list[str] | None = None,
+    ) -> bool:
+        terms = cls._entity_terms(text)
+        if not terms:
+            return True
+
+        corpus_parts: list[str] = []
+        for story in stories:
+            corpus_parts.extend(
+                str(story.get(key) or "")
+                for key in ("topic", "title", "source", "summary", "why_it_matters", "url")
+            )
+        corpus_parts.extend(grounding_texts or [])
+        corpus = " ".join(corpus_parts)
+        corpus_terms = cls._entity_terms(corpus)
+        corpus_tokens = {
+            re.sub(r"[^a-z0-9]+", "", token)
+            for token in re.findall(r"\b[\w'-]+\b", corpus.lower())
+        }
+        corpus_tokens.discard("")
+        return all(term in corpus_terms or term in corpus_tokens for term in terms)
+
+    @staticmethod
+    def _entity_terms(text: Any) -> set[str]:
+        normalized = (
+            str(text or "")
+            .replace("U.S.", "US")
+            .replace("U.K.", "UK")
+            .replace("U.N.", "UN")
+        )
+        terms: set[str] = set()
+        for match in re.finditer(r"\b(?:[A-Z][A-Za-z0-9'-]{2,}|[A-Z]{2,})\b", normalized):
+            term = re.sub(r"[^a-z0-9]+", "", match.group(0).lower())
+            if term and term not in TOP_LEVEL_COPY_ENTITY_STOPWORDS:
+                terms.add(term)
+        return terms
 
     @classmethod
     def _headline_from_stories(cls, stories: list[dict[str, Any]]) -> str:
@@ -1463,6 +1629,18 @@ Sports score packet:
         headline = str(brief.get("headline") or "").strip()
         if self._is_generic_headline(headline):
             issues.append("headline is generic")
+        top_level_copy = [
+            brief.get("headline"),
+            brief.get("dek"),
+            brief.get("summary"),
+            *brief.get("quick_hits", []),
+        ]
+        if any(
+            not self._copy_is_grounded_in_stories(item, stories)
+            for item in top_level_copy
+            if item
+        ):
+            issues.append("top-level brief copy includes unsupported named entities")
         if _word_count(brief.get("summary")) > 85:
             issues.append("summary is too long for the one-minute brief")
         verbose_hits = [
