@@ -966,8 +966,37 @@ def test_final_score_cards_expire_after_postgame_window():
     assert score is not None
     assert score["is_live"] is False
     assert score["is_final"] is True
-    assert score["expires_at"] == "2026-05-12T10:30:00+00:00"
+    assert score["expires_at"] == "2026-05-12T06:30:00+00:00"
     assert datetime.fromisoformat(score["expires_at"]) > datetime.fromisoformat(score["event_date"])
+
+
+def test_final_score_cards_do_not_survive_into_morning_brief():
+    final_event = {
+        **SAMPLE_SCORE_EVENT,
+        "date": "2026-05-12T02:00:00Z",
+        "status": {
+            "type": {
+                "state": "post",
+                "shortDetail": "Final",
+                "detail": "Final",
+                "completed": True,
+            }
+        },
+    }
+
+    score = DailyBriefPipeline._parse_score_event(
+        league="WNBA",
+        event=final_event,
+        source_url="https://site.api.espn.com/apis/site/v2/sports/basketball/wnba/scoreboard",
+        verified_at="2026-05-12T12:00:00+00:00",
+    )
+
+    assert score is not None
+    assert score["expires_at"] == "2026-05-12T08:00:00+00:00"
+    assert not DailyBriefPipeline._score_card_is_displayable(
+        score,
+        datetime(2026, 5, 12, 12, 0, tzinfo=timezone.utc),
+    )
 
 
 def test_scheduled_score_cards_are_allowed_and_sorted_before_finals():

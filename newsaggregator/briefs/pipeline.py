@@ -183,7 +183,7 @@ SPORT_SCORE_LEAGUE_PRIORITY = {
     "NCAAF": 6,
     "NCAAB": 7,
 }
-POSTGAME_SCORE_TTL = timedelta(hours=10)
+POSTGAME_SCORE_TTL = timedelta(hours=6)
 
 ARTICLE_SCHEMA: dict[str, Any] = {
     "type": "object",
