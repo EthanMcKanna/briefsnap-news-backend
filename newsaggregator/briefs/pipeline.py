@@ -2594,7 +2594,77 @@ Generated at: {generated_at}
                 domain = DailyBriefPipeline._domain_name(article.url)
                 domain_counts[domain] = domain_counts.get(domain, 0) + 1
 
+        return DailyBriefPipeline._ensure_minimum_topic_articles(
+            selected,
+            articles,
+            topic="SPORTS",
+            minimum=2,
+            limit=limit,
+        )
+
+    @staticmethod
+    def _ensure_minimum_topic_articles(
+        selected: list[ArticleCandidate],
+        articles: list[ArticleCandidate],
+        *,
+        topic: str,
+        minimum: int,
+        limit: int,
+    ) -> list[ArticleCandidate]:
+        selected_ids = {article.id for article in selected}
+        normalized_topic = DailyBriefPipeline._normalize_topic(topic)
+        existing_count = sum(
+            1
+            for article in selected
+            if DailyBriefPipeline._normalize_topic(article.topic) == normalized_topic
+        )
+        if existing_count >= minimum:
+            return selected
+
+        for article in articles:
+            if existing_count >= minimum:
+                break
+            if article.id in selected_ids or DailyBriefPipeline._normalize_topic(article.topic) != normalized_topic:
+                continue
+            if normalized_topic == "SPORTS" and not DailyBriefPipeline._is_high_signal_sports_candidate(
+                title=article.title,
+                source=article.source,
+                url=article.url,
+                description=article.description or article.content[:400],
+            ):
+                continue
+
+            if len(selected) < limit:
+                selected.append(article)
+            else:
+                replacement_index = DailyBriefPipeline._replacement_index_for_topic_minimum(
+                    selected,
+                    protected_topic=normalized_topic,
+                )
+                if replacement_index is None:
+                    break
+                selected_ids.discard(selected[replacement_index].id)
+                selected[replacement_index] = article
+
+            selected_ids.add(article.id)
+            existing_count += 1
+
         return selected
+
+    @staticmethod
+    def _replacement_index_for_topic_minimum(
+        selected: list[ArticleCandidate],
+        *,
+        protected_topic: str,
+    ) -> int | None:
+        for index in range(len(selected) - 1, -1, -1):
+            topic = DailyBriefPipeline._normalize_topic(selected[index].topic)
+            if topic not in {protected_topic, "TOP_NEWS"}:
+                return index
+        for index in range(len(selected) - 1, -1, -1):
+            if DailyBriefPipeline._normalize_topic(selected[index].topic) != protected_topic:
+                return index
+        return None
 
     @staticmethod
     def _match_story(

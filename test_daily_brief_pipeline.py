@@ -1013,6 +1013,56 @@ def test_enrichment_keeps_thin_high_signal_sports_candidates():
     assert [candidate.id for candidate in enriched] == ["sports-thin"]
 
 
+def test_diversification_keeps_high_signal_sports_in_source_packet():
+    articles = [
+        ArticleCandidate(
+            id=f"top-{index}",
+            topic="TOP_NEWS",
+            title=f"Major national story {index}",
+            source="Associated Press",
+            url=f"https://apnews.com/article/top-{index}",
+            description="A current top story with strong source support.",
+            score=100 - index,
+        )
+        for index in range(4)
+    ] + [
+        ArticleCandidate(
+            id=f"business-{index}",
+            topic="BUSINESS",
+            title=f"Market story {index}",
+            source="CNBC",
+            url=f"https://www.cnbc.com/story-{index}",
+            description="A current market story with strong source support.",
+            score=90 - index,
+        )
+        for index in range(4)
+    ] + [
+        ArticleCandidate(
+            id="sports-1",
+            topic="SPORTS",
+            title="NBA playoff injury report reshapes the finals race",
+            source="ESPN",
+            url="https://www.espn.com/nba/story/_/id/sports-1/nba-playoff-injury-report",
+            description="A late NBA injury update changed rotations before tonight's playoff game.",
+            score=5,
+        ),
+        ArticleCandidate(
+            id="sports-2",
+            topic="SPORTS",
+            title="MLB players demand salary overhaul before labor talks",
+            source="The Washington Post",
+            url="https://www.washingtonpost.com/business/2026/05/27/mlb-labor-negotiations/example",
+            description="",
+            score=4,
+        ),
+    ]
+
+    selected = DailyBriefPipeline._diversify_articles(articles, limit=6)
+
+    assert {"sports-1", "sports-2"}.issubset({article.id for article in selected})
+    assert sum(1 for article in selected if article.topic == "TOP_NEWS") >= 2
+
+
 def test_sports_story_filter_rejects_political_drift_without_word_substring_false_positive():
     assert not DailyBriefPipeline._is_high_signal_sports_candidate(
         title="Construction of cage-fighting arena transforms White House grounds",
