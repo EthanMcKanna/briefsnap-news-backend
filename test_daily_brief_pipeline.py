@@ -303,6 +303,59 @@ def test_quality_gate_rejects_badge_and_tiny_thumbnail_images():
     assert "story story-2 image_url is not suitable for story art" in issues
 
 
+def test_normalize_brief_strips_bad_story_art_before_quality_gate():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    articles = [
+        ArticleCandidate(
+            id="story-1",
+            topic="TOP_NEWS",
+            title="Top story with a badge image",
+            source="AP News",
+            url="https://apnews.com/article/story-1",
+            description="A meaningful summary explains the current update with enough concrete detail.",
+            image_url=(
+                "https://assets.apnews.com/9f/14/e730153245ddbefdf1f69031adea/"
+                "download-on-the-app-store-badge-us-uk-rgb-blk-01.png"
+            ),
+        ),
+        ArticleCandidate(
+            id="story-2",
+            topic="TOP_NEWS",
+            title="Second story with real art",
+            source="Axios",
+            url="https://www.axios.com/2026/05/28/story-2",
+            description="Another useful update for the day.",
+            image_url="https://images.axios.com/example/1366x768/2026/05/27/story.jpeg",
+        ),
+        ArticleCandidate(
+            id="story-3",
+            topic="BUSINESS",
+            title="Third story with real art",
+            source="CNBC",
+            url="https://www.cnbc.com/2026/05/28/story-3.html",
+            description="A market update with direct public impact.",
+            image_url="https://images.cnbc.com/uploads/story-3-1366x768.jpg",
+        ),
+        ArticleCandidate(id="story-4", topic="WORLD", title="Fourth story", source="BBC", url="https://www.bbc.com/news/story-4", description="World context."),
+        ArticleCandidate(id="story-5", topic="TECHNOLOGY", title="Fifth story", source="TechCrunch", url="https://techcrunch.com/story-5", description="Technology context."),
+        ArticleCandidate(id="story-6", topic="HEALTH", title="Sixth story", source="STAT", url="https://www.statnews.com/story-6", description="Health context."),
+    ]
+    payload = {
+        "headline": "Today's Brief",
+        "summary": "A concise current summary.",
+        "quick_hits": ["One", "Two"],
+        "stories": [{"id": article.id} for article in articles],
+        "sections": [],
+    }
+
+    brief = pipeline._normalize_brief(payload, articles, "test-model")
+    issues = pipeline._brief_quality_issues(brief)
+
+    assert brief["stories"][0]["image_url"] is None
+    assert brief["hero_image_url"] == "https://images.axios.com/example/1366x768/2026/05/27/story.jpeg"
+    assert not any("image_url is not suitable" in issue for issue in issues)
+
+
 def test_quality_gate_rejects_sports_story_drift():
     pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
     brief = valid_quality_brief()
@@ -559,3 +612,12 @@ def test_sports_story_filter_rejects_political_drift_without_word_substring_fals
     )
 
     assert not DailyBriefPipeline._contains_any_term("white house", ("win",))
+
+
+def test_sports_gate_accepts_athletic_paths_on_general_news_domains():
+    assert DailyBriefPipeline._is_high_signal_sports_candidate(
+        title="Inside the rivalry reshaping the league",
+        source="The New York Times",
+        url="https://www.nytimes.com/athletic/6500000/2026/05/28/example-story/",
+        description="A reported feature from the conference finals.",
+    )

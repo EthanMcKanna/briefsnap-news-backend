@@ -840,6 +840,7 @@ Sports score packet:
             if not source_article or source_article.id in story_ids:
                 continue
             story_ids.add(source_article.id)
+            image_url = self._story_image_url(source_article.image_url)
             normalized_stories.append(
                 {
                     "id": source_article.id,
@@ -851,7 +852,7 @@ Sports score packet:
                     "why_it_matters": _trim_words(story.get("why_it_matters") or "", 18),
                     "urgency": _clean_text(story.get("urgency") or "medium").lower() or "medium",
                     "published_at": source_article.published_at,
-                    "image_url": source_article.image_url,
+                    "image_url": image_url,
                 }
             )
 
@@ -860,6 +861,7 @@ Sports score packet:
                 if article.id in story_ids:
                     continue
                 story_ids.add(article.id)
+                image_url = self._story_image_url(article.image_url)
                 normalized_stories.append(
                     {
                         "id": article.id,
@@ -871,7 +873,7 @@ Sports score packet:
                         "why_it_matters": "High source weight and current relevance put it in the lead scan.",
                         "urgency": "medium",
                         "published_at": article.published_at,
-                        "image_url": article.image_url,
+                        "image_url": image_url,
                     }
                 )
                 if len(normalized_stories) >= 12:
@@ -922,7 +924,7 @@ Sports score packet:
                 "why_it_matters": "High source weight and current relevance put it in the lead scan.",
                 "urgency": "medium",
                 "published_at": article.published_at,
-                "image_url": article.image_url,
+                "image_url": self._story_image_url(article.image_url),
             }
             for article in top
         ]
@@ -1032,6 +1034,13 @@ Sports score packet:
                 break
 
         return sections[:8]
+
+    @staticmethod
+    def _story_image_url(image_url: str | None) -> str | None:
+        candidate = str(image_url or "").strip()
+        if candidate and ArticleFetcher._is_valid_image_url(candidate):
+            return candidate
+        return None
 
     @staticmethod
     def _hero_image_url(stories: list[dict[str, Any]]) -> str | None:
@@ -1505,13 +1514,39 @@ Sports score packet:
     ) -> bool:
         text = f"{title} {source} {description}".lower()
         domain = cls._domain_name(url)
-        is_primary_sports_source = any(domain.endswith(sports_domain) for sports_domain in PRIMARY_SPORTS_DOMAINS)
+        is_primary_sports_source = (
+            any(domain.endswith(sports_domain) for sports_domain in PRIMARY_SPORTS_DOMAINS)
+            or cls._sports_path_signal(url)
+        )
         has_sports_signal = cls._contains_any_term(text, SPORTS_SIGNAL_TERMS)
         has_section_drift = cls._contains_any_term(text, SPORTS_SECTION_DRIFT_TERMS)
 
         if has_section_drift and not (is_primary_sports_source or has_sports_signal):
             return False
         return is_primary_sports_source or has_sports_signal
+
+    @staticmethod
+    def _sports_path_signal(url: str) -> bool:
+        try:
+            parsed = urlparse(url)
+        except Exception:
+            return False
+        path = parsed.path.lower()
+        sports_markers = (
+            "/athletic/",
+            "/sports/",
+            "/sport/",
+            "/nba/",
+            "/wnba/",
+            "/mlb/",
+            "/nhl/",
+            "/nfl/",
+            "/mls/",
+            "/soccer/",
+            "/college-football/",
+            "/college-basketball/",
+        )
+        return any(marker in path for marker in sports_markers)
 
     @staticmethod
     def _contains_any_term(text: str, terms: tuple[str, ...]) -> bool:
