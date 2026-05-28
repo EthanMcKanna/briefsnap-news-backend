@@ -1071,6 +1071,49 @@ def test_enrichment_keeps_thin_high_signal_sports_candidates():
     assert [candidate.id for candidate in enriched] == ["sports-thin"]
 
 
+def test_fetch_espn_sports_news_normalizes_articles():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+
+    class Response:
+        def __init__(self, url: str):
+            self.url = url
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            league_slug = self.url.rstrip("/").split("/")[-2]
+            return {
+                "articles": [
+                    {
+                        "headline": f"{league_slug.upper()} playoff race tightens before weekend games",
+                        "description": "ESPN reports new roster and standings context for the league's playoff race.",
+                        "published": "2026-05-28T10:30:00Z",
+                        "links": {
+                            "web": {
+                                "href": f"https://www.espn.com/{league_slug}/story/_/id/12345/playoff-race"
+                            }
+                        },
+                        "images": [{"url": "https://a.espncdn.com/photo/2026/0528/sports.jpg"}],
+                        "source": {"name": "ESPN"},
+                    }
+                ]
+            }
+
+    def fake_get(url, params=None, timeout=None):
+        assert params == {"limit": 5}
+        assert timeout == 10
+        return Response(url)
+
+    with patch.object(pipeline.session, "get", fake_get):
+        articles = pipeline._fetch_espn_sports_news()
+
+    assert len(articles) >= 6
+    assert all(article["source"] == "ESPN" for article in articles)
+    assert all(article["url"].startswith("https://www.espn.com/") for article in articles)
+    assert all(article["image_url"].startswith("https://a.espncdn.com/") for article in articles)
+
+
 def test_diversification_keeps_high_signal_sports_in_source_packet():
     articles = [
         ArticleCandidate(

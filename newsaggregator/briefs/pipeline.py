@@ -476,6 +476,8 @@ class DailyBriefPipeline:
         articles = self.collect_articles()
         if not articles:
             raise RuntimeError("No article candidates survived discovery and extraction")
+        sports_source_count = sum(1 for article in articles if self._normalize_topic(article.topic) == "SPORTS")
+        print(f"Source packet sports stories: {sports_source_count}")
 
         self.sports_score_cards = self._fetch_top_sports_scores()
         print(f"Sports scores: selected {len(self.sports_score_cards)} game(s)")
@@ -521,6 +523,8 @@ class DailyBriefPipeline:
         for query in topic.search_queries:
             raw.extend(self._fetch_rss(self._google_news_search_url(query), topic))
         raw.extend(self._fetch_newsapi(topic))
+        if topic.code == "SPORTS":
+            raw.extend(self._fetch_espn_sports_news())
 
         candidates = [self._candidate_from_raw(item, topic) for item in raw]
         candidates = [candidate for candidate in candidates if candidate]
@@ -590,6 +594,62 @@ class DailyBriefPipeline:
                 }
             )
         return items
+
+    def _fetch_espn_sports_news(self) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        seen_urls: set[str] = set()
+        for league, path in SPORT_SCORE_ENDPOINTS:
+            url = f"https://site.api.espn.com/apis/site/v2/sports/{path}/news"
+            try:
+                response = self.session.get(url, params={"limit": 5}, timeout=10)
+                response.raise_for_status()
+                payload = response.json()
+            except Exception as exc:
+                print(f"[WARN] ESPN sports news fetch failed for {league}: {exc}")
+                continue
+
+            for article in payload.get("articles", []) or []:
+                headline = article.get("headline") or article.get("title")
+                links = article.get("links") or {}
+                web_link = links.get("web") if isinstance(links, dict) else {}
+                if not isinstance(web_link, dict):
+                    web_link = {}
+                href = web_link.get("href") or web_link.get("url") or article.get("link")
+                normalized_url = self._normalize_url(href)
+                if not headline or not normalized_url or normalized_url in seen_urls:
+                    continue
+                seen_urls.add(normalized_url)
+
+                raw_source = article.get("source")
+                if isinstance(raw_source, dict):
+                    source = raw_source.get("name") or raw_source.get("displayName")
+                else:
+                    source = raw_source
+
+                items.append(
+                    {
+                        "title": headline,
+                        "url": normalized_url,
+                        "source": source or "ESPN",
+                        "published_at": article.get("published") or article.get("lastModified"),
+                        "description": article.get("description") or article.get("story") or "",
+                        "image_url": self._espn_article_image_url(article),
+                    }
+                )
+        return items
+
+    @staticmethod
+    def _espn_article_image_url(article: dict[str, Any]) -> str | None:
+        images = article.get("images") or []
+        if not isinstance(images, list):
+            return None
+        for image in images:
+            if not isinstance(image, dict):
+                continue
+            image_url = image.get("url") or image.get("href")
+            if image_url:
+                return str(image_url)
+        return None
 
     def _candidate_from_raw(self, item: dict[str, Any], topic: TopicSource) -> ArticleCandidate | None:
         url = self._normalize_url(item.get("url"))
