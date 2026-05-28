@@ -389,6 +389,39 @@ def test_quality_gate_rejects_unsupported_top_level_named_entities():
     assert "top-level brief copy includes unsupported named entities" in issues
 
 
+def test_feed_cleanup_removes_google_news_cluster_artifacts():
+    raw_description = (
+        "France moves to repeal Code Noir, the slavery law it never abolished "
+        "&nbsp;&nbsp; AP News Opinion | The Brutal History That France..."
+    )
+
+    assert (
+        DailyBriefPipeline._clean_title(
+            "The golden age of handheld gaming is already over - The Verge",
+            source="The Verge",
+        )
+        == "The golden age of handheld gaming is already over"
+    )
+    assert (
+        DailyBriefPipeline._clean_description(
+            raw_description,
+            title="France moves to repeal Code Noir, the slavery law it never abolished",
+            source="AP News",
+        )
+        == ""
+    )
+
+
+def test_quality_gate_rejects_visible_html_artifacts():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    brief = valid_quality_brief()
+    brief["stories"][0]["summary"] = "First current story &nbsp;&nbsp; Reuters"
+
+    issues = pipeline._brief_quality_issues(brief)
+
+    assert "story story-1 contains HTML entities" in issues
+
+
 def test_quality_gate_rejects_google_wrappers_and_sparse_multimedia():
     pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
     brief = valid_quality_brief()

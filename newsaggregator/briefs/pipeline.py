@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import html
 import json
 import os
 import re
@@ -288,7 +289,8 @@ EDITORIAL_FILLER_PHRASES: tuple[str, ...] = (
 
 
 def _clean_text(value: Any) -> str:
-    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    text = html.unescape(str(value or "")).replace("\xa0", " ")
+    text = re.sub(r"\s+", " ", text).strip()
     for phrase in EDITORIAL_FILLER_PHRASES:
         if phrase in text.lower():
             text = re.sub(re.escape(phrase), "", text, flags=re.IGNORECASE).strip(" .;-")
@@ -306,6 +308,14 @@ def _trim_words(value: Any, max_words: int) -> str:
         return text
     trimmed = " ".join(words[:max_words]).rstrip(" ,;:-")
     return f"{trimmed}..."
+
+
+def _trim_words_plain(value: Any, max_words: int) -> str:
+    text = _clean_text(value)
+    words = text.split()
+    if len(words) <= max_words:
+        return text
+    return " ".join(words[:max_words]).rstrip(" ,;:-")
 
 
 def _trim_items(items: Any, *, max_items: int, max_words: int) -> list[str]:
@@ -582,20 +592,26 @@ class DailyBriefPipeline:
         return items
 
     def _candidate_from_raw(self, item: dict[str, Any], topic: TopicSource) -> ArticleCandidate | None:
-        title = (item.get("title") or "").strip()
         url = self._normalize_url(item.get("url"))
+        source = _clean_text(item.get("source") or (self._domain_name(url) if url else ""))
+        title = self._clean_title(item.get("title"), source=source)
         if not title or len(title) < 12 or not url:
             return None
         domain = self._domain_name(url)
+        description = self._clean_description(
+            item.get("description") or "",
+            title=title,
+            source=source,
+        )
         if any(domain.endswith(blocked) for blocked in LOW_VALUE_SOURCE_DOMAINS):
             return None
         if self._is_low_value_title(title, topic.code):
             return None
         if topic.code == "SPORTS" and not self._is_high_signal_sports_candidate(
             title=title,
-            source=item.get("source") or domain,
+            source=source or domain,
             url=url,
-            description=item.get("description") or "",
+            description=description,
         ):
             return None
 
@@ -604,10 +620,10 @@ class DailyBriefPipeline:
             id=stable,
             topic=topic.code,
             title=title,
-            source=item.get("source") or self._domain_name(url),
+            source=source or self._domain_name(url),
             url=url,
             published_at=item.get("published_at"),
-            description=(item.get("description") or "").strip(),
+            description=description,
             image_url=item.get("image_url"),
         )
 
@@ -869,14 +885,21 @@ Sports score packet:
                 continue
             story_ids.add(source_article.id)
             image_url = self._story_image_url(source_article.image_url)
+            source = _clean_text(story.get("source") or source_article.source)
+            title = self._clean_title(story.get("title") or source_article.title, source=source)
+            summary = self._clean_description(story.get("summary") or "", title=title, source=source)
+            if not summary:
+                summary = self._clean_description(source_article.description or "", title=title, source=source)
+            if not summary:
+                summary = _clean_text(source_article.content[:260]) or title
             normalized_stories.append(
                 {
                     "id": source_article.id,
                     "topic": story.get("topic") or source_article.topic,
-                    "title": _trim_words(story.get("title") or source_article.title, 18),
-                    "source": _clean_text(story.get("source") or source_article.source),
+                    "title": _trim_words(title, 18),
+                    "source": source,
                     "url": source_article.url,
-                    "summary": _trim_words(story.get("summary") or source_article.description, 22),
+                    "summary": _trim_words(summary, 22),
                     "why_it_matters": _trim_words(story.get("why_it_matters") or "", 18),
                     "urgency": _clean_text(story.get("urgency") or "medium").lower() or "medium",
                     "published_at": source_article.published_at,
@@ -890,14 +913,18 @@ Sports score packet:
                     continue
                 story_ids.add(article.id)
                 image_url = self._story_image_url(article.image_url)
+                title = self._clean_title(article.title, source=article.source)
+                summary = self._clean_description(article.description or "", title=title, source=article.source)
+                if not summary:
+                    summary = _clean_text(article.content[:260]) or title
                 normalized_stories.append(
                     {
                         "id": article.id,
                         "topic": article.topic,
-                        "title": _trim_words(article.title, 18),
+                        "title": _trim_words(title, 18),
                         "source": _clean_text(article.source),
                         "url": article.url,
-                        "summary": _trim_words(article.description or article.content, 22),
+                        "summary": _trim_words(summary, 22),
                         "why_it_matters": "High source weight and current relevance put it in the lead scan.",
                         "urgency": "medium",
                         "published_at": article.published_at,
@@ -940,30 +967,36 @@ Sports score packet:
     def _fallback_brief(self, articles: list[ArticleCandidate], model_used: str) -> dict[str, Any]:
         now = datetime.now(timezone.utc)
         top = articles[:12]
-        stories = [
-            {
-                "id": article.id,
-                "topic": article.topic,
-                "title": _trim_words(article.title, 18),
-                "source": _clean_text(article.source),
-                "url": article.url,
-                "summary": _trim_words(article.description or article.content, 22),
-                "why_it_matters": "High source weight and current relevance put it in the lead scan.",
-                "urgency": "medium",
-                "published_at": article.published_at,
-                "image_url": self._story_image_url(article.image_url),
-            }
-            for article in top
-        ]
+        stories = []
+        for article in top:
+            title = self._clean_title(article.title, source=article.source)
+            summary = self._clean_description(article.description or "", title=title, source=article.source)
+            if not summary:
+                summary = _clean_text(article.content[:260]) or title
+            stories.append(
+                {
+                    "id": article.id,
+                    "topic": article.topic,
+                    "title": _trim_words(title, 18),
+                    "source": _clean_text(article.source),
+                    "url": article.url,
+                    "summary": _trim_words(summary, 22),
+                    "why_it_matters": "High source weight and current relevance put it in the lead scan.",
+                    "urgency": "medium",
+                    "published_at": article.published_at,
+                    "image_url": self._story_image_url(article.image_url),
+                }
+            )
         score_cards = self.sports_score_cards[:6]
+        headline, dek, summary, quick_hits = self._grounded_top_level_copy(payload={}, stories=stories)
         brief = {
             "id": self.today_id,
             "generated_at": now.isoformat(),
             "model_used": model_used,
-            "headline": self._headline_from_stories(stories),
-            "dek": "The most useful stories available from the current source packet.",
-            "summary": _trim_words(" ".join(article.title for article in top[:4]), 70),
-            "quick_hits": _trim_items([article.title for article in top[:6]], max_items=6, max_words=14),
+            "headline": headline,
+            "dek": dek,
+            "summary": summary,
+            "quick_hits": quick_hits,
             "hero_image_url": self._hero_image_url(stories),
             "sections": self._normalize_sections([], stories, articles),
             "custom_widgets": self._normalize_widgets([], stories, articles),
@@ -1114,7 +1147,7 @@ Sports score packet:
         stories: list[dict[str, Any]],
         grounding_texts: list[str] | None = None,
     ) -> tuple[str, str, str, list[str]]:
-        headline = _trim_words(payload.get("headline") or "", 10)
+        headline = _trim_words_plain(payload.get("headline") or "", 10)
         dek = _trim_words(payload.get("dek") or "", 22)
         summary = _trim_words(payload.get("summary") or "", 70)
         quick_hits = _trim_items(payload.get("quick_hits", []), max_items=6, max_words=14)
@@ -1172,7 +1205,11 @@ Sports score packet:
         if not summary:
             summary = _trim_words(" ".join(titles[:6]), 70)
 
-        quick_hits = _trim_items(titles, max_items=6, max_words=14)
+        quick_hits = [
+            _trim_words_plain(title, 14)
+            for title in titles[:6]
+            if _trim_words_plain(title, 14)
+        ]
         return dek, summary, quick_hits
 
     @staticmethod
@@ -1230,7 +1267,7 @@ Sports score packet:
     @classmethod
     def _headline_from_stories(cls, stories: list[dict[str, Any]]) -> str:
         for story in stories:
-            title = _trim_words(story.get("title"), 10)
+            title = _trim_words_plain(story.get("title"), 10)
             if title and not cls._is_generic_headline(title):
                 return title
         return "BriefSnap current news"
@@ -1580,6 +1617,11 @@ Sports score packet:
                     ),
                 ):
                     issues.append(f"sports story {story_id} failed sports relevance gate")
+            if any(
+                "&nbsp;" in str(story.get(key) or "") or "\xa0" in str(story.get(key) or "")
+                for key in ("title", "summary", "why_it_matters")
+            ):
+                issues.append(f"story {story_id} contains HTML entities")
 
         leading_domain_count = len(set(story_domains[: min(len(story_domains), 8)]))
         if len(stories) >= 8 and leading_domain_count < 4:
@@ -1606,12 +1648,16 @@ Sports score packet:
         headline = str(brief.get("headline") or "").strip()
         if self._is_generic_headline(headline):
             issues.append("headline is generic")
+        if headline.endswith("..."):
+            issues.append("headline is visibly truncated")
         top_level_copy = [
             brief.get("headline"),
             brief.get("dek"),
             brief.get("summary"),
             *brief.get("quick_hits", []),
         ]
+        if any("&nbsp;" in str(item) or "\xa0" in str(item) for item in top_level_copy if item):
+            issues.append("top-level brief copy contains HTML entities")
         if any(
             not self._copy_is_grounded_in_stories(item, stories)
             for item in top_level_copy
@@ -2260,8 +2306,63 @@ Generated at: {generated_at}
 
     @staticmethod
     def _clean_html(raw: str) -> str:
-        text = re.sub(r"<[^>]+>", " ", raw or "")
-        return re.sub(r"\s+", " ", text).strip()
+        text = html.unescape(raw or "")
+        text = re.sub(r"(?:\s*\xa0\s*){2,}", " | ", text)
+        text = text.replace("\xa0", " ")
+        text = re.sub(r"<[^>]+>", " ", text)
+        return _clean_text(text)
+
+    @classmethod
+    def _clean_title(cls, value: Any, *, source: str = "") -> str:
+        title = _clean_text(value)
+        source_names = {
+            _clean_text(source),
+            "AP News",
+            "Associated Press",
+            "Reuters",
+            "NPR",
+            "The Verge",
+            "TechCrunch",
+            "CNBC",
+            "BBC",
+            "Washington Post",
+            "The New York Times",
+        }
+        for source_name in sorted((name for name in source_names if name), key=len, reverse=True):
+            title = re.sub(
+                rf"\s+(?:-|\u2013|\u2014|\|)\s*{re.escape(source_name)}\s*$",
+                "",
+                title,
+                flags=re.IGNORECASE,
+            ).strip()
+        return title
+
+    @classmethod
+    def _clean_description(cls, value: Any, *, title: str = "", source: str = "") -> str:
+        text = cls._clean_html(str(value or ""))
+        if not text:
+            return ""
+
+        segments = [segment.strip() for segment in re.split(r"\s+\|\s+", text) if segment.strip()]
+        if len(segments) > 1 and title and cls._same_title_fragment(segments[0], title):
+            return ""
+
+        cleaned_title = _clean_text(title)
+        cleaned_source = _clean_text(source)
+        if cleaned_title and text.lower().startswith(cleaned_title.lower()):
+            text = text[len(cleaned_title):].strip(" -|.;:")
+        if cleaned_source and text.lower().startswith(cleaned_source.lower()):
+            text = text[len(cleaned_source):].strip(" -|.;:")
+
+        return _clean_text(text)
+
+    @staticmethod
+    def _same_title_fragment(left: Any, right: Any) -> bool:
+        left_key = re.sub(r"\W+", " ", _clean_text(left).lower()).strip()
+        right_key = re.sub(r"\W+", " ", _clean_text(right).lower()).strip()
+        if not left_key or not right_key:
+            return False
+        return left_key == right_key or left_key.startswith(right_key) or right_key.startswith(left_key)
 
     @staticmethod
     def _normalize_url(url: str | None) -> str | None:
