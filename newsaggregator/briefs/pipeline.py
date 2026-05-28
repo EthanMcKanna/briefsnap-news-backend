@@ -859,7 +859,6 @@ Sports score packet:
     ) -> dict[str, Any]:
         article_by_id = {article.id: article for article in articles}
         story_ids = set()
-        selected_articles: dict[str, ArticleCandidate] = {}
         normalized_stories = []
 
         for story in payload.get("stories", []):
@@ -869,7 +868,6 @@ Sports score packet:
             if not source_article or source_article.id in story_ids:
                 continue
             story_ids.add(source_article.id)
-            selected_articles[source_article.id] = source_article
             image_url = self._story_image_url(source_article.image_url)
             normalized_stories.append(
                 {
@@ -891,7 +889,6 @@ Sports score packet:
                 if article.id in story_ids:
                     continue
                 story_ids.add(article.id)
-                selected_articles[article.id] = article
                 image_url = self._story_image_url(article.image_url)
                 normalized_stories.append(
                     {
@@ -916,11 +913,9 @@ Sports score packet:
         now = datetime.now(timezone.utc)
         sections = self._normalize_sections(payload.get("sections", []), normalized_stories, articles)
         widgets = self._normalize_widgets(payload.get("custom_widgets", []), normalized_stories, articles)
-        grounding_texts = self._selected_article_grounding_texts(selected_articles)
         headline, dek, summary, quick_hits = self._grounded_top_level_copy(
             payload=payload,
             stories=normalized_stories,
-            grounding_texts=grounding_texts,
         )
 
         score_cards = self.sports_score_cards[:6]
@@ -1110,24 +1105,6 @@ Sports score packet:
         if candidate and ArticleFetcher._is_valid_image_url(candidate):
             return candidate
         return None
-
-    @staticmethod
-    def _selected_article_grounding_texts(
-        selected_articles: dict[str, ArticleCandidate],
-    ) -> list[str]:
-        return [
-            " ".join(
-                str(part or "")
-                for part in (
-                    article.title,
-                    article.description,
-                    article.content[:1200],
-                    article.source,
-                    article.url,
-                )
-            )
-            for article in selected_articles.values()
-        ]
 
     @classmethod
     def _grounded_top_level_copy(
