@@ -908,10 +908,10 @@ class SportsStorage:
     def archive_stale_final_scores(
         cls,
         now: Optional[datetime] = None,
-        max_age_hours: int = 36,
+        max_age_hours: int = 12,
         batch_size: int = 500,
     ) -> int:
-        """Hide old final scores from clients that query status == Final without an age window."""
+        """Hide final scores once they are no longer fresh enough for score rails."""
         db = FirebaseStorage.get_db()
         if not db:
             return 0
@@ -963,6 +963,11 @@ class SportsStorage:
                 doc.reference,
                 {
                     'status': 'Archived Final',
+                    'status_state': 'archived',
+                    'status_short': 'Archived Final',
+                    'status_detail': 'Archived Final',
+                    'is_final': False,
+                    'time_remaining': None,
                     'archived_final_at': timestamp,
                     'last_checked_at': timestamp,
                     'live_update': True,

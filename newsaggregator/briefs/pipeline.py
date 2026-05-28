@@ -1037,7 +1037,7 @@ Sports score packet:
     def _hero_image_url(stories: list[dict[str, Any]]) -> str | None:
         for story in stories:
             image_url = str(story.get("image_url") or "").strip()
-            if image_url:
+            if image_url and ArticleFetcher._is_valid_image_url(image_url):
                 return image_url
         return None
 
@@ -1325,8 +1325,10 @@ Sports score packet:
                 issues.append(f"story {story_id} still uses Google News wrapper URL")
 
             image_url = str(story.get("image_url") or "").strip()
-            if image_url:
+            if image_url and ArticleFetcher._is_valid_image_url(image_url):
                 story_image_count += 1
+            elif image_url:
+                issues.append(f"story {story_id} image_url is not suitable for story art")
 
             if self._normalize_topic(story.get("topic")) == "SPORTS":
                 if not self._is_high_signal_sports_candidate(
@@ -1349,6 +1351,8 @@ Sports score packet:
         hero_image_url = str(brief.get("hero_image_url") or "").strip()
         if stories and not hero_image_url:
             issues.append("missing hero_image_url")
+        elif hero_image_url and not ArticleFetcher._is_valid_image_url(hero_image_url):
+            issues.append("hero_image_url is not suitable for story art")
         if len(stories) >= 6 and story_image_count < 2:
             issues.append("leading stories need at least two image_url values")
 

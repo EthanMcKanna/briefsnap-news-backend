@@ -282,6 +282,27 @@ def test_quality_gate_rejects_google_wrappers_and_sparse_multimedia():
     assert "leading stories need at least two image_url values" in issues
 
 
+def test_quality_gate_rejects_badge_and_tiny_thumbnail_images():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    brief = valid_quality_brief()
+    brief["hero_image_url"] = (
+        "https://assets.apnews.com/9f/14/e730153245ddbefdf1f69031adea/"
+        "download-on-the-app-store-badge-us-uk-rgb-blk-01.png"
+    )
+    brief["stories"][0]["image_url"] = brief["hero_image_url"]
+    brief["stories"][1]["image_url"] = (
+        "https://media.npr.org/assets/img/2024/04/19/"
+        "tile-wild-card-with-rachel-martin_sq-37e6eb53-s100-c100.jpg"
+    )
+    brief["stories"][2]["image_url"] = "https://images.cnbc.com/uploads/story-3-1366x768.jpg"
+
+    issues = pipeline._brief_quality_issues(brief)
+
+    assert "hero_image_url is not suitable for story art" in issues
+    assert "story story-1 image_url is not suitable for story art" in issues
+    assert "story story-2 image_url is not suitable for story art" in issues
+
+
 def test_quality_gate_rejects_sports_story_drift():
     pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
     brief = valid_quality_brief()
@@ -432,6 +453,12 @@ def test_image_url_filter_accepts_validated_cdn_image_shapes():
     )
     assert not ArticleFetcher._is_valid_image_url(
         "https://example.com/assets/logo.svg"
+    )
+    assert not ArticleFetcher._is_valid_image_url(
+        "https://assets.apnews.com/9f/14/download-on-the-app-store-badge-us-uk-rgb-blk-01.png"
+    )
+    assert not ArticleFetcher._is_valid_image_url(
+        "https://media.npr.org/assets/img/tile-wild-card_sq-37e6eb53-s100-c100.jpg"
     )
 
 

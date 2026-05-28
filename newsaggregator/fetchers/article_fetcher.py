@@ -288,9 +288,11 @@ class ArticleFetcher:
             
         # Common patterns in logo URLs
         logo_patterns = [
-            'logo', 'header', 'brand', 'icon', 'favicon', 'site-icon', 
-            'wp-content/uploads/logo', '/assets/images/logo', 
-            'masthead', 'navbar', 'footer'
+            'logo', 'header', 'brand', 'icon', 'favicon', 'site-icon',
+            'wp-content/uploads/logo', '/assets/images/logo',
+            'masthead', 'navbar', 'footer', 'badge', 'app-store',
+            'appstore', 'google-play', 'play-store',
+            'download-on-the-app-store',
         ]
         
         # Check if any logo pattern is in the URL
@@ -302,7 +304,17 @@ class ArticleFetcher:
         # Check if image is at a path typically used for logos
         parsed_url = urlparse(image_url)
         path_parts = parsed_url.path.split('/')
-        if len(path_parts) <= 3 and any(p in ['images', 'img', 'assets'] for p in path_parts):
+        filename = path_parts[-1].lower() if path_parts else ''
+        if (
+            len(path_parts) <= 3
+            and any(p in ['images', 'img', 'assets'] for p in path_parts)
+            and any(marker in filename for marker in ('logo', 'icon', 'favicon'))
+        ):
+            return True
+
+        # News pages often expose square author/show thumbnails before article art.
+        tiny_square_patterns = ('s100-c100', 's150-c150', 's200-c200', '_sq-', '-sq-')
+        if any(pattern in url_lower for pattern in tiny_square_patterns):
             return True
             
         return False
