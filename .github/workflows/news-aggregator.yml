@@ -54,6 +54,10 @@ jobs:
           BRIEFSNAP_GEMINI_MODEL: gemini-2.5-flash
           BRIEFSNAP_GEMINI_TIMEOUT_MS: "75000"
         run: python main.py
+
+      - name: Verify published daily brief
+        if: success()
+        run: python verify_daily_brief_release.py
         
       - name: Upload data
         if: success()
