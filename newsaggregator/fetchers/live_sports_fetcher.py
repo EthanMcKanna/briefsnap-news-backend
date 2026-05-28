@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
 import time
 
+RECENT_FINAL_SCORE_HOURS = 6
+
 class LiveSportsFetcher:
     """Efficient fetcher for updating live/in-progress games only."""
     
@@ -134,8 +136,12 @@ class LiveSportsFetcher:
             # Check for live status keywords
             is_live = state == 'in' or any(keyword.lower() in status_lower for keyword in self.live_status_keywords)
             
-            # Also check for games that just finished so the final score lands quickly.
-            is_recently_finished = completed and self._event_within_hours(event, hours=10)
+            # Also check games that just finished so the final score lands quickly,
+            # while keeping old finals out of the live score lane.
+            is_recently_finished = completed and self._event_within_hours(
+                event,
+                hours=RECENT_FINAL_SCORE_HOURS,
+            )
             
             return is_live or is_recently_finished
             

@@ -3,6 +3,7 @@
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Set
 from firebase_admin import firestore
+from google.cloud.firestore_v1.base_query import FieldFilter
 from newsaggregator.storage.firebase_storage import FirebaseStorage
 from newsaggregator.config.settings import FIRESTORE_BATCH_WRITE_LIMIT
 
@@ -908,7 +909,7 @@ class SportsStorage:
     def archive_stale_final_scores(
         cls,
         now: Optional[datetime] = None,
-        max_age_hours: int = 12,
+        max_age_hours: int = 6,
         batch_size: int = 500,
     ) -> int:
         """Hide final scores once they are no longer fresh enough for score rails."""
@@ -936,9 +937,9 @@ class SportsStorage:
             for sport_code in sport_codes:
                 stale_docs.extend(
                     db.collection(cls.SPORTS_GAMES_COLLECTION)
-                    .where('sport_code', '==', sport_code)
-                    .where('timestamp', '<', cutoff_ts)
-                    .where('status', '==', 'Final')
+                    .where(filter=FieldFilter('sport_code', '==', sport_code))
+                    .where(filter=FieldFilter('timestamp', '<', cutoff_ts))
+                    .where(filter=FieldFilter('status', '==', 'Final'))
                     .order_by('timestamp', direction=firestore.Query.DESCENDING)
                     .limit(per_sport_limit)
                     .stream()
@@ -949,7 +950,7 @@ class SportsStorage:
             stale_docs = [
                 doc
                 for doc in db.collection(cls.SPORTS_GAMES_COLLECTION)
-                .where('status', '==', 'Final')
+                .where(filter=FieldFilter('status', '==', 'Final'))
                 .limit(batch_size * 4)
                 .stream()
                 if is_stale_final(doc.to_dict())

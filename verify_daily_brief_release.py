@@ -15,6 +15,7 @@ from typing import Any
 
 import firebase_admin
 from firebase_admin import credentials, firestore
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 from newsaggregator.briefs.pipeline import DailyBriefPipeline, PipelineOptions
 from newsaggregator.fetchers.article_fetcher import ArticleFetcher
@@ -78,6 +79,7 @@ def audit_daily_brief(
     now: datetime,
     max_age: timedelta,
     max_sports_age: timedelta,
+    max_final_score_age: timedelta,
     check_current_espn: bool,
 ) -> tuple[list[str], dict[str, Any]]:
     issues: list[str] = []
@@ -158,6 +160,13 @@ def audit_daily_brief(
         if current_score_ids and not scores:
             issues.append("ESPN has displayable scores but the brief has none")
 
+    stale_final_score_ids = stale_active_final_score_ids(now=now, max_age=max_final_score_age)
+    if stale_final_score_ids:
+        issues.append(
+            "sports_games has active final scores older than "
+            f"{max_final_score_age}: {', '.join(stale_final_score_ids)}"
+        )
+
     summary = {
         "story_count": len(stories),
         "valid_image_count": valid_image_count,
@@ -165,8 +174,31 @@ def audit_daily_brief(
         "sports_score_count": len(scores),
         "latest_sports_verified_at": latest_verified_at.isoformat() if latest_verified_at else None,
         "current_espn_score_ids": current_score_ids,
+        "stale_active_final_score_ids": stale_final_score_ids,
     }
     return issues, summary
+
+
+def stale_active_final_score_ids(*, now: datetime, max_age: timedelta) -> list[str]:
+    cutoff_ts = (now - max_age).timestamp()
+    stale_ids: list[str] = []
+    db = firestore.client()
+    sport_codes = ("nfl", "ncaaf", "nba", "wnba", "ncaab", "mlb", "nhl", "mls")
+
+    for sport_code in sport_codes:
+        docs = (
+            db.collection("sports_games")
+            .where(filter=FieldFilter("sport_code", "==", sport_code))
+            .where(filter=FieldFilter("timestamp", "<", cutoff_ts))
+            .where(filter=FieldFilter("status", "==", "Final"))
+            .order_by("timestamp", direction=firestore.Query.DESCENDING)
+            .limit(20)
+            .stream()
+        )
+        for doc in docs:
+            stale_ids.append(doc.id)
+
+    return stale_ids
 
 
 def parse_args() -> argparse.Namespace:
@@ -174,6 +206,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--doc-id", help="Specific daily_briefs document id to check")
     parser.add_argument("--max-age-hours", type=float, default=30)
     parser.add_argument("--max-sports-age-minutes", type=float, default=20)
+    parser.add_argument("--max-final-score-age-hours", type=float, default=6)
     parser.add_argument("--skip-current-espn", action="store_true")
     return parser.parse_args()
 
@@ -187,6 +220,7 @@ def main() -> int:
         now=now,
         max_age=timedelta(hours=args.max_age_hours),
         max_sports_age=timedelta(minutes=args.max_sports_age_minutes),
+        max_final_score_age=timedelta(hours=args.max_final_score_age_hours),
         check_current_espn=not args.skip_current_espn,
     )
 
