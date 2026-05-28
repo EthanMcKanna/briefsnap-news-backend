@@ -943,9 +943,13 @@ Sports score packet:
         if not summary:
             summary = _clean_text(article.content[:260]) or title
 
+        topic = article.topic
+        if self._normalize_topic(topic) != "SPORTS":
+            topic = story.get("topic") or article.topic
+
         return {
             "id": article.id,
-            "topic": story.get("topic") or article.topic,
+            "topic": topic,
             "title": _trim_words(title, 18),
             "source": source,
             "url": article.url,

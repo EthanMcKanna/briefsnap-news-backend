@@ -396,6 +396,66 @@ def test_normalize_brief_backfills_sports_news_when_model_omits_it():
     assert "sports desk needs at least one sports news story" not in pipeline._brief_quality_issues(brief)
 
 
+def test_normalize_brief_keeps_canonical_sports_topic_when_model_mislabels_story():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    articles = article_candidates_for_normalization() + [
+        ArticleCandidate(
+            id="sports-1",
+            topic="SPORTS",
+            title="NBA playoff injury report reshapes the finals race",
+            source="ESPN",
+            url="https://www.espn.com/nba/story/_/id/sports-1/nba-playoff-injury-report",
+            description="A late NBA injury update changed rotations before tonight's playoff game.",
+            score=22,
+        ),
+        ArticleCandidate(
+            id="sports-2",
+            topic="SPORTS",
+            title="MLB players push salary overhaul before labor talks",
+            source="The Athletic",
+            url="https://www.nytimes.com/athletic/7312470/2026/05/27/mlb-labor-negotiations/",
+            description="MLB players are pressing for changes to the salary system before the next bargaining round.",
+            score=21,
+        ),
+    ]
+    payload = {
+        "headline": "Court ruling and markets lead the day",
+        "summary": "A concise current summary.",
+        "quick_hits": ["Court ruling reshapes federal immigration enforcement"],
+        "stories": [
+            *[
+                {
+                    "id": article.id,
+                    "topic": article.topic,
+                    "title": article.title,
+                    "source": article.source,
+                    "summary": article.description,
+                    "why_it_matters": "Readers get a concrete current consequence.",
+                }
+                for article in articles[:6]
+            ],
+            {
+                "id": "sports-1",
+                "topic": "BUSINESS",
+                "title": "NBA playoff injury report reshapes the finals race",
+                "source": "ESPN",
+                "summary": "A late NBA injury update changed rotations before tonight's playoff game.",
+                "why_it_matters": "It changes how fans read the next matchup.",
+            },
+        ],
+        "sections": [],
+        "custom_widgets": [],
+    }
+
+    brief = pipeline._normalize_brief(payload, articles, "gemini-3-flash-preview-search-grounded")
+    sports_story_ids = [
+        story["id"] for story in brief["stories"]
+        if pipeline._normalize_topic(story.get("topic")) == "SPORTS"
+    ]
+
+    assert sports_story_ids == ["sports-1", "sports-2"]
+
+
 def test_quality_gate_rejects_scores_without_sports_news_story():
     pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
     score = DailyBriefPipeline._parse_score_event(
