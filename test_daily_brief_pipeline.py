@@ -513,6 +513,9 @@ def test_image_url_filter_accepts_validated_cdn_image_shapes():
     assert not ArticleFetcher._is_valid_image_url(
         "https://media.npr.org/assets/img/tile-wild-card_sq-37e6eb53-s100-c100.jpg"
     )
+    assert not ArticleFetcher._is_valid_image_url(
+        "https://www.washingtonpost.com/dr/resources/images/generic-newsletter-signup.png"
+    )
 
 
 def test_scrape_candidate_resolves_google_news_before_image_enrichment():

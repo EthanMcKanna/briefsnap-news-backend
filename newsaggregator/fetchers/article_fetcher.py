@@ -292,7 +292,8 @@ class ArticleFetcher:
             'wp-content/uploads/logo', '/assets/images/logo',
             'masthead', 'navbar', 'footer', 'badge', 'app-store',
             'appstore', 'google-play', 'play-store',
-            'download-on-the-app-store',
+            'download-on-the-app-store', 'newsletter', 'sign-up',
+            'signup', 'generic-newsletter',
         ]
         
         # Check if any logo pattern is in the URL
