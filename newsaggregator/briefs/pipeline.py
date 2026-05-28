@@ -892,13 +892,16 @@ Sports score packet:
             summary = _trim_words(" ".join(story["title"] for story in normalized_stories[:4]), 70)
         if not quick_hits:
             quick_hits = _trim_items([story["title"] for story in normalized_stories[:6]], max_items=6, max_words=14)
+        headline = _trim_words(payload.get("headline") or "", 10)
+        if self._is_generic_headline(headline):
+            headline = self._headline_from_stories(normalized_stories)
 
         score_cards = self.sports_score_cards[:6]
         brief = {
             "id": self.today_id,
             "generated_at": now.isoformat(),
             "model_used": model_used,
-            "headline": _trim_words(payload.get("headline") or "Today's Brief", 10),
+            "headline": headline,
             "dek": _trim_words(payload.get("dek"), 22),
             "summary": summary,
             "quick_hits": quick_hits,
@@ -935,7 +938,7 @@ Sports score packet:
             "id": self.today_id,
             "generated_at": now.isoformat(),
             "model_used": model_used,
-            "headline": "Today's Brief",
+            "headline": self._headline_from_stories(stories),
             "dek": "The most useful stories available from the current source packet.",
             "summary": _trim_words(" ".join(article.title for article in top[:4]), 70),
             "quick_hits": _trim_items([article.title for article in top[:6]], max_items=6, max_words=14),
@@ -1038,7 +1041,41 @@ Sports score packet:
             if len(sections) >= 7:
                 break
 
-        return sections[:8]
+        return self._sanitize_sections(sections, stories)[:8]
+
+    def _sanitize_sections(
+        self,
+        sections: list[dict[str, Any]],
+        stories: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        valid_story_ids = {str(story.get("id")) for story in stories if story.get("id")}
+        cleaned_sections: list[dict[str, Any]] = []
+        seen_topics: set[str] = set()
+
+        for section in sections:
+            topic = self._normalize_topic(section.get("topic"))
+            if not topic or topic in seen_topics:
+                continue
+            story_ids = [
+                str(story_id).strip()
+                for story_id in section.get("story_ids", [])
+                if str(story_id).strip() in valid_story_ids
+            ]
+            if topic == "SPORTS":
+                story_ids = self._filter_sports_story_ids(story_ids, stories)
+            if not story_ids:
+                story_ids = self._story_ids_for_topic(topic, stories, limit=4)
+                if topic == "SPORTS":
+                    story_ids = self._filter_sports_story_ids(story_ids, stories)
+            if not story_ids and not (topic == "SPORTS" and self.sports_score_cards):
+                continue
+            cleaned = dict(section)
+            cleaned["topic"] = topic
+            cleaned["story_ids"] = story_ids
+            cleaned_sections.append(cleaned)
+            seen_topics.add(topic)
+
+        return cleaned_sections
 
     @staticmethod
     def _story_image_url(image_url: str | None) -> str | None:
@@ -1046,6 +1083,27 @@ Sports score packet:
         if candidate and ArticleFetcher._is_valid_image_url(candidate):
             return candidate
         return None
+
+    @classmethod
+    def _headline_from_stories(cls, stories: list[dict[str, Any]]) -> str:
+        for story in stories:
+            title = _trim_words(story.get("title"), 10)
+            if title and not cls._is_generic_headline(title):
+                return title
+        return "BriefSnap current news"
+
+    @staticmethod
+    def _is_generic_headline(headline: str | None) -> bool:
+        normalized = re.sub(r"\W+", " ", str(headline or "").lower()).strip()
+        return normalized in {
+            "",
+            "daily brief",
+            "today s brief",
+            "today s news",
+            "top news",
+            "useful daily brief",
+            "briefsnap daily brief",
+        }
 
     @staticmethod
     def _hero_image_url(stories: list[dict[str, Any]]) -> str | None:
@@ -1402,8 +1460,8 @@ Sports score packet:
         if len(thin_summaries) > 2:
             issues.append("too many leading stories have thin summaries")
 
-        headline = str(brief.get("headline") or "").strip().lower()
-        if not headline or headline in {"today's brief", "today's news", "top news"}:
+        headline = str(brief.get("headline") or "").strip()
+        if self._is_generic_headline(headline):
             issues.append("headline is generic")
         if _word_count(brief.get("summary")) > 85:
             issues.append("summary is too long for the one-minute brief")

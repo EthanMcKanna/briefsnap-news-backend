@@ -118,7 +118,7 @@ def valid_quality_brief() -> dict:
     ]
     return {
         "model_used": "gemini-3-flash-preview-search-grounded",
-        "headline": "Useful daily brief",
+        "headline": "Federal ruling and markets lead the day",
         "dek": "Short useful context.",
         "summary": "A concise summary with enough substance for the daily brief quality gate.",
         "quick_hits": ["One current signal"],
@@ -142,6 +142,43 @@ def valid_quality_brief() -> dict:
         ],
         "sports_scores": [],
     }
+
+
+def article_candidates_for_normalization() -> list[ArticleCandidate]:
+    return [
+        ArticleCandidate(
+            id=f"story-{index}",
+            topic=topic,
+            title=title,
+            source=source,
+            url=url,
+            description="A concise source-backed update with enough detail for the brief.",
+            image_url=image_url,
+        )
+        for index, (topic, title, source, url, image_url) in enumerate(
+            [
+                (
+                    "TOP_NEWS",
+                    "Court ruling reshapes federal immigration enforcement",
+                    "Reuters",
+                    "https://www.reuters.com/world/us/story-1",
+                    "https://static.reuters.com/images/story-1.jpg",
+                ),
+                (
+                    "TOP_NEWS",
+                    "Storm recovery costs rise across the Gulf Coast",
+                    "AP News",
+                    "https://apnews.com/article/story-2",
+                    "https://dims.apnews.com/dims4/default/story-2.jpg",
+                ),
+                ("BUSINESS", "Markets fall after retail outlook weakens", "CNBC", "https://www.cnbc.com/story-3", None),
+                ("TECHNOLOGY", "Chipmaker expands domestic AI server production", "The Verge", "https://www.theverge.com/story-4", None),
+                ("WORLD", "European leaders agree on new defense financing", "BBC", "https://www.bbc.com/news/story-5", None),
+                ("HEALTH", "Hospitals prepare for summer virus uptick", "STAT", "https://www.statnews.com/story-6", None),
+            ],
+            start=1,
+        )
+    ]
 
 
 def test_parse_score_event_keeps_verification_metadata():
@@ -188,7 +225,7 @@ def test_quality_gate_rejects_sports_scores_without_source_metadata():
 
     brief = {
         "model_used": "gemini-3-flash-preview-search-grounded",
-        "headline": "Useful daily brief",
+        "headline": "Federal ruling and markets lead the day",
         "dek": "Short useful context.",
         "summary": "A concise summary with enough substance for the daily brief quality gate.",
         "quick_hits": ["One current signal"],
@@ -372,6 +409,69 @@ def test_normalize_brief_strips_bad_story_art_before_quality_gate():
     assert brief["stories"][0]["image_url"] is None
     assert brief["hero_image_url"] == "https://images.axios.com/example/1366x768/2026/05/27/story.jpeg"
     assert not any("image_url is not suitable" in issue for issue in issues)
+
+
+def test_normalize_brief_replaces_generic_headline_with_specific_story_title():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    articles = article_candidates_for_normalization()
+    payload = {
+        "headline": "Today's Brief",
+        "summary": "A concise current summary.",
+        "quick_hits": ["One", "Two"],
+        "stories": [{"id": article.id} for article in articles],
+        "sections": [],
+    }
+
+    brief = pipeline._normalize_brief(payload, articles, "test-model")
+
+    assert brief["headline"] == "Court ruling reshapes federal immigration enforcement"
+    assert "headline is generic" not in pipeline._brief_quality_issues(brief)
+
+
+def test_normalize_sections_drops_invalid_non_sports_sections():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    stories = [
+        {
+            "id": "story-1",
+            "topic": "TOP_NEWS",
+            "title": "Court ruling reshapes federal immigration enforcement",
+            "summary": "A concise source-backed update with enough detail for the brief.",
+            "why_it_matters": "It changes enforcement priorities.",
+            "source": "Reuters",
+            "url": "https://www.reuters.com/world/us/story-1",
+        },
+        {
+            "id": "story-2",
+            "topic": "TOP_NEWS",
+            "title": "Storm recovery costs rise across the Gulf Coast",
+            "summary": "A second source-backed update with enough detail for the brief.",
+            "why_it_matters": "Budgets may need emergency support.",
+            "source": "AP News",
+            "url": "https://apnews.com/article/story-2",
+        },
+    ]
+    sections = pipeline._sanitize_sections(
+        [
+            {
+                "topic": "HEALTH",
+                "title": "Health",
+                "summary": "No matching health story exists.",
+                "why_it_matters": "The section should not survive.",
+                "story_ids": ["missing-story"],
+            },
+            {
+                "topic": "TOP_NEWS",
+                "title": "Top News",
+                "summary": "The top items.",
+                "why_it_matters": "They matter.",
+                "story_ids": ["story-1", "story-2"],
+            },
+        ],
+        stories,
+    )
+
+    assert [section["topic"] for section in sections] == ["TOP_NEWS"]
+    assert sections[0]["story_ids"] == ["story-1", "story-2"]
 
 
 def test_quality_gate_rejects_sports_story_drift():
