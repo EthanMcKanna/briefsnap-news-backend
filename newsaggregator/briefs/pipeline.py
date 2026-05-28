@@ -39,12 +39,121 @@ GROUNDING_MODEL = "gemini-3-flash-preview"
 QUALITY_MODEL = "gemini-3.1-pro-preview"
 FAST_MODEL = "gemini-2.5-flash-lite"
 
+TRUSTED_SOURCE_DOMAINS: dict[str, int] = {
+    "apnews.com": 10,
+    "reuters.com": 10,
+    "npr.org": 8,
+    "bbc.com": 8,
+    "bbc.co.uk": 8,
+    "wsj.com": 8,
+    "nytimes.com": 8,
+    "washingtonpost.com": 8,
+    "bloomberg.com": 8,
+    "cnbc.com": 7,
+    "axios.com": 7,
+    "politico.com": 7,
+    "theguardian.com": 7,
+    "statnews.com": 7,
+    "theverge.com": 7,
+    "techcrunch.com": 7,
+    "espn.com": 7,
+    "theathletic.com": 7,
+    "cbssports.com": 6,
+    "nbcsports.com": 6,
+}
+
+LOW_VALUE_SOURCE_DOMAINS: tuple[str, ...] = (
+    "prnewswire.com",
+    "globenewswire.com",
+    "businesswire.com",
+    "accesswire.com",
+)
+
+PRIMARY_SPORTS_DOMAINS: tuple[str, ...] = (
+    "espn.com",
+    "theathletic.com",
+    "cbssports.com",
+    "nbcsports.com",
+    "foxsports.com",
+    "mlb.com",
+    "nba.com",
+    "nfl.com",
+    "nhl.com",
+    "mlssoccer.com",
+)
+
+SPORTS_SIGNAL_TERMS: tuple[str, ...] = (
+    "nfl",
+    "nba",
+    "wnba",
+    "mlb",
+    "nhl",
+    "mls",
+    "ncaa",
+    "college football",
+    "college basketball",
+    "college sports",
+    "nil",
+    "transfer portal",
+    "salary cap",
+    "playoff",
+    "finals",
+    "standings",
+    "trade",
+    "injury",
+    "coach",
+    "draft",
+    "contract",
+    "game",
+    "match",
+    "score",
+    "win",
+    "loss",
+    "beat",
+    "defeat",
+    "season",
+    "tournament",
+    "championship",
+)
+
+SPORTS_SECTION_DRIFT_TERMS: tuple[str, ...] = (
+    "white house",
+    "president",
+    "administration",
+    "campaign",
+    "congress",
+    "senate",
+    "supreme court",
+    "tariff",
+    "lawsuit",
+    "stock",
+    "earnings",
+    "box office",
+    "celebrity",
+)
+
+MAX_ARTICLES_PER_DOMAIN = int(os.environ.get("BRIEFSNAP_MAX_ARTICLES_PER_DOMAIN", "3"))
+
 SPORT_SCORE_ENDPOINTS: tuple[tuple[str, str], ...] = (
+    ("NFL", "football/nfl"),
+    ("NCAAF", "football/college-football"),
     ("NBA", "basketball/nba"),
+    ("WNBA", "basketball/wnba"),
+    ("NCAAB", "basketball/mens-college-basketball"),
     ("MLB", "baseball/mlb"),
     ("NHL", "hockey/nhl"),
     ("MLS", "soccer/usa.1"),
 )
+SPORT_SCORE_LEAGUE_PRIORITY = {
+    "NBA": 0,
+    "NHL": 1,
+    "WNBA": 2,
+    "MLB": 3,
+    "MLS": 4,
+    "NFL": 5,
+    "NCAAF": 6,
+    "NCAAB": 7,
+}
 
 ARTICLE_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -140,6 +249,49 @@ CUSTOM_WIDGET_SCHEMA: dict[str, Any] = {
     "required": ["title", "summary", "items"],
 }
 
+EDITORIAL_FILLER_PHRASES: tuple[str, ...] = (
+    "selected as one of the strongest current stories in the source packet",
+    "a compact view of current developments in this category",
+    "significant developments",
+    "continues to unfold",
+    "it remains to be seen",
+    "the situation is developing",
+)
+
+
+def _clean_text(value: Any) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    for phrase in EDITORIAL_FILLER_PHRASES:
+        if phrase in text.lower():
+            text = re.sub(re.escape(phrase), "", text, flags=re.IGNORECASE).strip(" .;-")
+    return text
+
+
+def _word_count(value: Any) -> int:
+    return len(re.findall(r"\b[\w'-]+\b", str(value or "")))
+
+
+def _trim_words(value: Any, max_words: int) -> str:
+    text = _clean_text(value)
+    words = text.split()
+    if len(words) <= max_words:
+        return text
+    trimmed = " ".join(words[:max_words]).rstrip(" ,;:-")
+    return f"{trimmed}..."
+
+
+def _trim_items(items: Any, *, max_items: int, max_words: int) -> list[str]:
+    if not isinstance(items, list):
+        return []
+    trimmed: list[str] = []
+    for item in items:
+        text = _trim_words(item, max_words)
+        if text:
+            trimmed.append(text)
+        if len(trimmed) >= max_items:
+            break
+    return trimmed
+
 
 @dataclass(frozen=True)
 class TopicSource:
@@ -169,8 +321,11 @@ class ArticleCandidate:
             "topic": self.topic,
             "title": self.title,
             "source": self.source,
+            "domain": DailyBriefPipeline._domain_name(self.url),
             "url": self.url,
             "published_at": self.published_at,
+            "image_url": self.image_url,
+            "source_score": round(self.score, 2),
             "excerpt": body[:max_chars],
         }
 
@@ -231,7 +386,11 @@ TOPICS: tuple[TopicSource, ...] = (
     TopicSource(
         code="SPORTS",
         name="Sports",
-        search_queries=("major sports news today", "NFL NBA MLB NHL news today"),
+        search_queries=(
+            "ESPN The Athletic NFL NBA MLB NHL WNBA MLS news today",
+            "NFL NBA MLB NHL trade injury playoff standings news today",
+            "major sports news today confirmed team league",
+        ),
         feeds=("https://news.google.com/rss/headlines/section/topic/SPORTS?hl=en-US&gl=US&ceid=US:en",),
     ),
     TopicSource(
@@ -314,7 +473,8 @@ class DailyBriefPipeline:
 
         deduped = self._dedupe(candidates)
         enriched = self._enrich_articles(deduped[: self.options.max_total_articles])
-        return sorted(enriched, key=lambda article: article.score, reverse=True)
+        ranked = sorted(enriched, key=lambda article: article.score, reverse=True)
+        return self._diversify_articles(ranked, limit=self.options.max_total_articles)
 
     def _collect_topic(self, topic: TopicSource) -> list[ArticleCandidate]:
         raw: list[dict[str, Any]] = []
@@ -398,7 +558,17 @@ class DailyBriefPipeline:
         url = self._normalize_url(item.get("url"))
         if not title or len(title) < 12 or not url:
             return None
+        domain = self._domain_name(url)
+        if any(domain.endswith(blocked) for blocked in LOW_VALUE_SOURCE_DOMAINS):
+            return None
         if self._is_low_value_title(title, topic.code):
+            return None
+        if topic.code == "SPORTS" and not self._is_high_signal_sports_candidate(
+            title=title,
+            source=item.get("source") or domain,
+            url=url,
+            description=item.get("description") or "",
+        ):
             return None
 
         stable = hashlib.sha1(f"{topic.code}:{url}".encode("utf-8")).hexdigest()[:16]
@@ -437,7 +607,12 @@ class DailyBriefPipeline:
 
     def _scrape_candidate(self, candidate: ArticleCandidate) -> ArticleCandidate:
         if "news.google.com" in candidate.url:
-            return candidate
+            resolved_url = ArticleFetcher.extract_real_url_from_google(candidate.url)
+            normalized_url = self._normalize_url(resolved_url)
+            if not normalized_url:
+                return candidate
+            candidate.url = normalized_url
+            candidate.score = max(candidate.score, self._score_candidate(candidate))
 
         content, published = ArticleFetcher.scrape_article_content(candidate.url)
         if content:
@@ -445,10 +620,19 @@ class DailyBriefPipeline:
             candidate.score += min(len(content) / 1200, 8)
         if published and not candidate.published_at:
             candidate.published_at = published.isoformat()
+        image_candidates = [candidate.image_url] if candidate.image_url else []
+        fetched_article_images = False
         if not candidate.image_url:
-            images = ArticleFetcher.find_article_images(candidate.url)
-            if images:
-                candidate.image_url = images[0]
+            image_candidates.extend(ArticleFetcher.find_article_images(candidate.url))
+            fetched_article_images = True
+        best_image = ArticleFetcher.select_best_image(
+            image_candidates,
+            fallback_urls=[] if fetched_article_images else [candidate.url],
+            max_fallback_articles=1,
+        )
+        if best_image:
+            candidate.image_url = best_image
+            candidate.score += 1.5
         return candidate
 
     def generate_brief(self, articles: list[ArticleCandidate]) -> dict[str, Any]:
@@ -571,12 +755,21 @@ can show:
 - a top daily brief,
 - weather-adjacent context only when newsworthy,
 - and lightweight custom news widgets by topic.
+Every word must earn its place. Assume the reader opens the app for one minute
+and expects a real payoff.
 
 Rules:
-- Use the supplied source packet as the main evidence.
+- Use the supplied source packet as the main evidence and cross-check with
+  Search before elevating a fast-moving claim.
 - Use Google Search to verify recency, importance, and any fast-moving claim.
+- Prefer direct reporting from wire services, established national/local
+  outlets, and subject-matter publications over aggregated rewrites.
+- Preserve source diversity: do not let one publisher or one ideological lane
+  dominate unless the facts clearly require it.
 - Do not invent URLs. Use article ids and URLs from the source packet when you
   select stories.
+- Prefer stories with usable image_url values when editorial importance is
+  otherwise comparable, but never choose a weaker story just because it has art.
 - Keep the prose crisp and useful. No hype, no generic caveats.
 - Prefer US relevance for TOP_NEWS, but preserve important world context.
 - The response must match the JSON schema exactly.
@@ -587,6 +780,14 @@ Rules:
 - For SPORTS, incorporate the sports score packet when live or final games are
   present.
 - Return at least five custom_widgets when the source packet supports them.
+- headline: 10 words max, specific enough to feel reported.
+- dek: 22 words max, one sharp reason the day matters.
+- summary: 45 to 70 words, no throat-clearing.
+- quick_hits: 5 or 6 bullets, 14 words max each.
+- story summary: 22 words max. why_it_matters: 18 words max with a concrete consequence.
+- custom widget title: 5 words max. summary: 24 words max. items: 3 to 5 bullets, 12 words max each.
+- Ban generic phrases like "continues to unfold", "significant developments",
+  "it remains to be seen", and "selected as one of the strongest stories".
 
 Generated at: {generated_at}
 
@@ -643,12 +844,12 @@ Sports score packet:
                 {
                     "id": source_article.id,
                     "topic": story.get("topic") or source_article.topic,
-                    "title": story.get("title") or source_article.title,
-                    "source": story.get("source") or source_article.source,
-                    "url": story.get("url") or source_article.url,
-                    "summary": story.get("summary") or source_article.description,
-                    "why_it_matters": story.get("why_it_matters") or "",
-                    "urgency": story.get("urgency") or "medium",
+                    "title": _trim_words(story.get("title") or source_article.title, 18),
+                    "source": _clean_text(story.get("source") or source_article.source),
+                    "url": source_article.url,
+                    "summary": _trim_words(story.get("summary") or source_article.description, 22),
+                    "why_it_matters": _trim_words(story.get("why_it_matters") or "", 18),
+                    "urgency": _clean_text(story.get("urgency") or "medium").lower() or "medium",
                     "published_at": source_article.published_at,
                     "image_url": source_article.image_url,
                 }
@@ -663,11 +864,11 @@ Sports score packet:
                     {
                         "id": article.id,
                         "topic": article.topic,
-                        "title": article.title,
-                        "source": article.source,
+                        "title": _trim_words(article.title, 18),
+                        "source": _clean_text(article.source),
                         "url": article.url,
-                        "summary": article.description or (article.content[:240] if article.content else ""),
-                        "why_it_matters": "Selected as one of the strongest current stories in the source packet.",
+                        "summary": _trim_words(article.description or article.content, 22),
+                        "why_it_matters": "High source weight and current relevance put it in the lead scan.",
                         "urgency": "medium",
                         "published_at": article.published_at,
                         "image_url": article.image_url,
@@ -683,25 +884,22 @@ Sports score packet:
         sections = self._normalize_sections(payload.get("sections", []), normalized_stories, articles)
         widgets = self._normalize_widgets(payload.get("custom_widgets", []), normalized_stories, articles)
 
-        summary = str(payload.get("summary") or "").strip()
-        quick_hits = [
-            str(hit).strip()
-            for hit in payload.get("quick_hits", [])
-            if str(hit).strip()
-        ]
+        summary = _trim_words(payload.get("summary"), 70)
+        quick_hits = _trim_items(payload.get("quick_hits", []), max_items=6, max_words=14)
         if not summary:
-            summary = " ".join(story["title"] for story in normalized_stories[:4])
+            summary = _trim_words(" ".join(story["title"] for story in normalized_stories[:4]), 70)
         if not quick_hits:
-            quick_hits = [story["title"] for story in normalized_stories[:6]]
+            quick_hits = _trim_items([story["title"] for story in normalized_stories[:6]], max_items=6, max_words=14)
 
         brief = {
             "id": self.today_id,
             "generated_at": now.isoformat(),
             "model_used": model_used,
-            "headline": payload.get("headline", "Today's Brief"),
-            "dek": payload.get("dek", ""),
+            "headline": _trim_words(payload.get("headline") or "Today's Brief", 10),
+            "dek": _trim_words(payload.get("dek"), 22),
             "summary": summary,
-            "quick_hits": quick_hits[:8],
+            "quick_hits": quick_hits,
+            "hero_image_url": self._hero_image_url(normalized_stories),
             "sections": sections,
             "custom_widgets": widgets,
             "stories": normalized_stories[:18],
@@ -717,11 +915,11 @@ Sports score packet:
             {
                 "id": article.id,
                 "topic": article.topic,
-                "title": article.title,
-                "source": article.source,
+                "title": _trim_words(article.title, 18),
+                "source": _clean_text(article.source),
                 "url": article.url,
-                "summary": article.description or (article.content[:240] if article.content else ""),
-                "why_it_matters": "Selected as one of the strongest current stories in the source packet.",
+                "summary": _trim_words(article.description or article.content, 22),
+                "why_it_matters": "High source weight and current relevance put it in the lead scan.",
                 "urgency": "medium",
                 "published_at": article.published_at,
                 "image_url": article.image_url,
@@ -734,8 +932,9 @@ Sports score packet:
             "model_used": model_used,
             "headline": "Today's Brief",
             "dek": "The most useful stories available from the current source packet.",
-            "summary": " ".join(article.title for article in top[:4]),
-            "quick_hits": [article.title for article in top[:6]],
+            "summary": _trim_words(" ".join(article.title for article in top[:4]), 70),
+            "quick_hits": _trim_items([article.title for article in top[:6]], max_items=6, max_words=14),
+            "hero_image_url": self._hero_image_url(stories),
             "sections": self._normalize_sections([], stories, articles),
             "custom_widgets": self._normalize_widgets([], stories, articles),
             "stories": stories,
@@ -758,9 +957,9 @@ Sports score packet:
                 if not isinstance(section, dict):
                     continue
                 topic = self._normalize_topic(section.get("topic"))
-                title = str(section.get("title") or "").strip()
-                summary = str(section.get("summary") or "").strip()
-                why_it_matters = str(section.get("why_it_matters") or "").strip()
+                title = _trim_words(section.get("title"), 6)
+                summary = _trim_words(section.get("summary"), 24)
+                why_it_matters = _trim_words(section.get("why_it_matters"), 18)
                 story_ids = [
                     str(story_id)
                     for story_id in section.get("story_ids", [])
@@ -768,6 +967,8 @@ Sports score packet:
                 ]
                 if not story_ids:
                     story_ids = self._story_ids_for_topic(topic, stories, limit=4)
+                if topic == "SPORTS":
+                    story_ids = self._filter_sports_story_ids(story_ids, stories)
                 if not story_ids:
                     continue
                 if not topic or (not summary and not why_it_matters):
@@ -788,17 +989,19 @@ Sports score packet:
                     break
 
         if self.sports_score_cards and "SPORTS" not in seen_topics:
-            sports_story_ids = [
-                story["id"]
-                for story in stories
-                if self._normalize_topic(story.get("topic")) == "SPORTS" and story.get("id")
-            ][:4]
+            sports_story_ids = self._sports_story_ids(stories, limit=4)
             sections.append(
                 {
                     "topic": "SPORTS",
                     "title": "Sports",
-                    "summary": " • ".join(score["display"] for score in self.sports_score_cards[:3]),
-                    "why_it_matters": "Live and final scoreboard context from ESPN.",
+                    "summary": _trim_words(
+                        " • ".join(
+                            score.get("context_line") or score.get("display", "")
+                            for score in self.sports_score_cards[:3]
+                        ),
+                        24,
+                    ),
+                    "why_it_matters": "ESPN-verified live and final context keeps the scoreboard dependable.",
                     "story_ids": sports_story_ids,
                 }
             )
@@ -819,8 +1022,8 @@ Sports score packet:
                 {
                     "topic": topic,
                     "title": self._topic_name(topic),
-                    "summary": " • ".join(article.title for article in group[:3]),
-                    "why_it_matters": "A compact view of current developments in this category.",
+                    "summary": _trim_words(" • ".join(article.title for article in group[:3]), 24),
+                    "why_it_matters": "Enough current signal to merit a dedicated scan.",
                     "story_ids": story_ids,
                 }
             )
@@ -830,8 +1033,17 @@ Sports score packet:
 
         return sections[:8]
 
+    @staticmethod
+    def _hero_image_url(stories: list[dict[str, Any]]) -> str | None:
+        for story in stories:
+            image_url = str(story.get("image_url") or "").strip()
+            if image_url:
+                return image_url
+        return None
+
     def _fetch_top_sports_scores(self) -> list[dict[str, Any]]:
         today = datetime.now(timezone.utc)
+        verified_at = today.isoformat()
         dates = [
             (today - timedelta(days=1)).strftime("%Y%m%d"),
             today.strftime("%Y%m%d"),
@@ -850,21 +1062,47 @@ Sports score packet:
                     continue
 
                 for event in payload.get("events", []) or []:
-                    parsed = self._parse_score_event(league, event)
-                    if parsed:
+                    parsed = self._parse_score_event(
+                        league=league,
+                        event=event,
+                        source_url=response.url,
+                        verified_at=verified_at,
+                    )
+                    if parsed and self._score_card_is_displayable(parsed, today):
                         games.append(parsed)
 
         deduped: dict[str, dict[str, Any]] = {}
         for game in games:
             deduped[game["id"]] = game
 
-        return sorted(
-            deduped.values(),
-            key=lambda game: (game["rank"], -(game.get("timestamp") or 0)),
-        )[:6]
+        sorted_games = sorted(deduped.values(), key=self._score_card_sort_key)
+        selected: list[dict[str, Any]] = []
+        league_counts: dict[str, int] = {}
+        for game in sorted_games:
+            league = str(game.get("league") or "")
+            if league_counts.get(league, 0) >= 2:
+                continue
+            selected.append(game)
+            league_counts[league] = league_counts.get(league, 0) + 1
+            if len(selected) == 6:
+                return selected
+
+        seen_ids = {game.get("id") for game in selected}
+        for game in sorted_games:
+            if game.get("id") in seen_ids:
+                continue
+            selected.append(game)
+            if len(selected) == 6:
+                break
+        return selected
 
     @staticmethod
-    def _parse_score_event(league: str, event: dict[str, Any]) -> dict[str, Any] | None:
+    def _parse_score_event(
+        league: str,
+        event: dict[str, Any],
+        source_url: str = "",
+        verified_at: str = "",
+    ) -> dict[str, Any] | None:
         competitions = event.get("competitions") or []
         if not competitions:
             return None
@@ -875,6 +1113,8 @@ Sports score packet:
         detail = status.get("shortDetail") or status.get("detail") or status.get("description") or "Scheduled"
         competition = competitions[0]
         competitors = competition.get("competitors") or []
+        venue_data = competition.get("venue") or {}
+        broadcasts = competition.get("broadcasts") or []
 
         home = next((item for item in competitors if item.get("homeAway") == "home"), None)
         away = next((item for item in competitors if item.get("homeAway") == "away"), None)
@@ -884,19 +1124,34 @@ Sports score packet:
         def team(item: dict[str, Any]) -> dict[str, Any]:
             team_data = item.get("team") or {}
             raw_score = item.get("score")
-            score = int(raw_score) if str(raw_score).isdigit() else None
+            score = int(raw_score) if state != "pre" and str(raw_score).isdigit() else None
+            records = item.get("records") or []
+            record = ""
+            for record_item in records:
+                record = record_item.get("summary") or record
+                if record:
+                    break
+            curated_rank = item.get("curatedRank") or {}
+            rank = curated_rank.get("current") or item.get("rank")
+            try:
+                if rank and int(rank) > 99:
+                    rank = None
+            except (TypeError, ValueError):
+                rank = None
             return {
                 "name": team_data.get("displayName") or team_data.get("name") or "",
                 "abbreviation": team_data.get("abbreviation") or "",
+                "short_name": team_data.get("shortDisplayName") or team_data.get("shortName") or "",
                 "score": score,
                 "winner": item.get("winner"),
+                "record": record,
+                "rank": rank,
+                "logo": team_data.get("logo"),
             }
 
         home_team = team(home)
         away_team = team(away)
         has_score = home_team["score"] is not None and away_team["score"] is not None
-        if state == "pre" and not has_score:
-            return None
 
         if has_score:
             display = (
@@ -909,14 +1164,65 @@ Sports score packet:
         if detail:
             display = f"{display} ({detail})"
 
+        winner = home_team if home_team["winner"] else away_team if away_team["winner"] else None
+        if has_score and winner:
+            loser = away_team if winner is home_team else home_team
+            margin = abs(int(home_team["score"]) - int(away_team["score"]))
+            result_note = f"{winner['abbreviation'] or winner['short_name'] or winner['name']} by {margin}"
+            if margin == 0:
+                result_note = "Tied"
+            if completed or state == "post":
+                context_line = (
+                    f"{winner['abbreviation'] or winner['short_name'] or winner['name']} beat "
+                    f"{loser['abbreviation'] or loser['short_name'] or loser['name']} by {margin}"
+                )
+            else:
+                context_line = f"{winner['abbreviation'] or winner['short_name'] or winner['name']} leads by {margin}"
+        elif has_score and home_team["score"] == away_team["score"]:
+            result_note = "Tied"
+            context_line = f"{away_team['abbreviation']} and {home_team['abbreviation']} tied"
+        else:
+            result_note = detail
+            context_line = display
+
+        venue = venue_data.get("fullName") or ""
+        venue_city = (venue_data.get("address") or {}).get("city") or ""
+        venue_state = (venue_data.get("address") or {}).get("state") or ""
+        venue_location = ", ".join(part for part in (venue_city, venue_state) if part)
+        broadcast = ""
+        if broadcasts:
+            names = [
+                name
+                for broadcast_item in broadcasts[:2]
+                for name in ((broadcast_item.get("names") or [])[:1])
+                if name
+            ]
+            broadcast = ", ".join(names)
+
         timestamp = None
+        event_date = None
         if event.get("date"):
             try:
-                timestamp = datetime.fromisoformat(event["date"].replace("Z", "+00:00")).timestamp()
+                event_date = datetime.fromisoformat(event["date"].replace("Z", "+00:00")).astimezone(timezone.utc)
+                timestamp = event_date.timestamp()
             except ValueError:
                 timestamp = None
 
-        rank = 0 if state == "in" else 1 if completed or state == "post" else 2
+        rank = 0 if state == "in" else 1 if state == "pre" else 2
+        verified_dt = None
+        if verified_at:
+            try:
+                verified_dt = datetime.fromisoformat(verified_at.replace("Z", "+00:00")).astimezone(timezone.utc)
+            except ValueError:
+                verified_dt = None
+        if state == "in" and verified_dt:
+            expires_at = (verified_dt + timedelta(minutes=15)).isoformat()
+        elif (completed or state == "post") and event_date:
+            expires_at = (event_date + timedelta(hours=12)).isoformat()
+        elif event_date:
+            expires_at = (event_date + timedelta(minutes=30)).isoformat()
+        else:
+            expires_at = None
         raw_event_id = event.get("id") or hashlib.sha1(
             f"{league}:{event.get('name')}:{event.get('date')}".encode("utf-8")
         ).hexdigest()[:12]
@@ -924,6 +1230,12 @@ Sports score packet:
         return {
             "id": f"{league.lower()}-{raw_event_id}",
             "league": league,
+            "source": "ESPN",
+            "source_url": source_url,
+            "verified_at": verified_at,
+            "event_date": event_date.isoformat() if event_date else event.get("date"),
+            "expires_at": expires_at,
+            "event_id": str(raw_event_id),
             "name": event.get("name") or f"{away_team['name']} at {home_team['name']}",
             "status": detail,
             "state": state,
@@ -932,9 +1244,49 @@ Sports score packet:
             "home_team": home_team,
             "away_team": away_team,
             "display": display,
+            "context_line": context_line,
+            "result_note": result_note,
+            "venue": venue,
+            "venue_location": venue_location,
+            "broadcast": broadcast,
             "timestamp": timestamp,
             "rank": rank,
         }
+
+    @staticmethod
+    def _score_card_is_displayable(score: dict[str, Any], now: datetime | None = None) -> bool:
+        if not isinstance(score, dict):
+            return False
+
+        now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        expires_at = score.get("expires_at")
+        if expires_at:
+            try:
+                expires_dt = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+                if expires_dt.tzinfo is None:
+                    expires_dt = expires_dt.replace(tzinfo=timezone.utc)
+                return expires_dt.astimezone(timezone.utc) > now
+            except ValueError:
+                return False
+
+        return bool(score.get("is_live") or score.get("is_final"))
+
+    @staticmethod
+    def _score_card_sort_key(score: dict[str, Any]) -> tuple[int, int, float]:
+        timestamp = score.get("timestamp") or 0
+        try:
+            timestamp_value = float(timestamp)
+        except (TypeError, ValueError):
+            timestamp_value = 0
+
+        league = str(score.get("league") or "").upper()
+        league_priority = SPORT_SCORE_LEAGUE_PRIORITY.get(league, 99)
+        state = str(score.get("state") or "").lower()
+        if score.get("is_live") or state == "in":
+            return (0, league_priority, -timestamp_value)
+        if state == "pre":
+            return (1, league_priority, timestamp_value)
+        return (2, league_priority, -timestamp_value)
 
     def _brief_quality_issues(self, brief: dict[str, Any]) -> list[str]:
         issues: list[str] = []
@@ -955,6 +1307,51 @@ Sports score packet:
         }
         if len(normalized_titles) < min(6, len(stories)):
             issues.append("stories are not distinct enough")
+
+        story_domains: list[str] = []
+        story_image_count = 0
+        for story in stories:
+            story_id = str(story.get("id") or "<unknown>").strip()
+            url = str(story.get("url") or "").strip()
+            parsed_url = urlparse(url)
+            domain = self._domain_name(url) if url else ""
+            if domain:
+                story_domains.append(domain)
+            if not url:
+                issues.append(f"story {story_id} missing url")
+            elif parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+                issues.append(f"story {story_id} has invalid url")
+            elif domain.endswith("news.google.com"):
+                issues.append(f"story {story_id} still uses Google News wrapper URL")
+
+            image_url = str(story.get("image_url") or "").strip()
+            if image_url:
+                story_image_count += 1
+
+            if self._normalize_topic(story.get("topic")) == "SPORTS":
+                if not self._is_high_signal_sports_candidate(
+                    title=str(story.get("title") or ""),
+                    source=str(story.get("source") or ""),
+                    url=url,
+                    description=" ".join(
+                        str(story.get(key) or "")
+                        for key in ("summary", "why_it_matters")
+                    ),
+                ):
+                    issues.append(f"sports story {story_id} failed sports relevance gate")
+
+        leading_domain_count = len(set(story_domains[: min(len(story_domains), 8)]))
+        if len(stories) >= 8 and leading_domain_count < 4:
+            issues.append("leading stories need at least four distinct source domains")
+        elif len(stories) >= 6 and leading_domain_count < 3:
+            issues.append("leading stories need at least three distinct source domains")
+
+        hero_image_url = str(brief.get("hero_image_url") or "").strip()
+        if stories and not hero_image_url:
+            issues.append("missing hero_image_url")
+        if len(stories) >= 6 and story_image_count < 2:
+            issues.append("leading stories need at least two image_url values")
+
         thin_summaries = [
             story
             for story in stories[:8]
@@ -966,6 +1363,22 @@ Sports score packet:
         headline = str(brief.get("headline") or "").strip().lower()
         if not headline or headline in {"today's brief", "today's news", "top news"}:
             issues.append("headline is generic")
+        if _word_count(brief.get("summary")) > 85:
+            issues.append("summary is too long for the one-minute brief")
+        verbose_hits = [
+            hit
+            for hit in brief.get("quick_hits", [])
+            if _word_count(hit) > 18
+        ]
+        if verbose_hits:
+            issues.append("quick hits exceed the brief word budget")
+        verbose_story_copy = [
+            story
+            for story in stories[:8]
+            if _word_count(story.get("summary")) > 28 or _word_count(story.get("why_it_matters")) > 24
+        ]
+        if verbose_story_copy:
+            issues.append("leading stories are too verbose")
 
         section_topics = [self._normalize_topic(section.get("topic")) for section in sections]
         if "TOP_NEWS" not in section_topics:
@@ -1000,6 +1413,29 @@ Sports score packet:
 
         if self.sports_score_cards and not brief.get("sports_scores"):
             issues.append("sports scores were fetched but omitted from the brief")
+        for score in brief.get("sports_scores", []):
+            if not isinstance(score, dict):
+                issues.append("sports score entry is not an object")
+                continue
+            score_id = str(score.get("id") or "").strip()
+            league = str(score.get("league") or "").strip()
+            if not score_id:
+                issues.append("sports score missing id")
+            if league not in {league for league, _ in SPORT_SCORE_ENDPOINTS}:
+                issues.append(f"sports score {score_id or '<unknown>'} has unsupported league {league or '<blank>'}")
+            if score.get("source") != "ESPN" or not score.get("source_url"):
+                issues.append(f"sports score {score_id or '<unknown>'} missing ESPN source metadata")
+            if not score.get("verified_at"):
+                issues.append(f"sports score {score_id or '<unknown>'} missing verified_at")
+            for side in ("away_team", "home_team"):
+                team = score.get(side)
+                if not isinstance(team, dict):
+                    issues.append(f"sports score {score_id or '<unknown>'} missing {side}")
+                    continue
+                if not (team.get("abbreviation") or team.get("name")):
+                    issues.append(f"sports score {score_id or '<unknown>'} missing {side} identity")
+                if score.get("state") != "pre" and team.get("score") is None:
+                    issues.append(f"sports score {score_id or '<unknown>'} missing {side} score")
 
         return issues
 
@@ -1021,6 +1457,69 @@ Sports score packet:
             ]
         return [str(story["id"]) for story in candidates[:limit] if story.get("id")]
 
+    @classmethod
+    def _sports_story_ids(cls, stories: list[dict[str, Any]], limit: int = 4) -> list[str]:
+        story_ids = [
+            str(story["id"])
+            for story in stories
+            if cls._normalize_topic(story.get("topic")) == "SPORTS" and story.get("id")
+        ]
+        return cls._filter_sports_story_ids(story_ids, stories)[:limit]
+
+    @classmethod
+    def _filter_sports_story_ids(
+        cls,
+        story_ids: list[str],
+        stories: list[dict[str, Any]],
+    ) -> list[str]:
+        stories_by_id = {str(story.get("id")): story for story in stories if story.get("id")}
+        filtered: list[str] = []
+        for story_id in story_ids:
+            story = stories_by_id.get(str(story_id))
+            if not story:
+                continue
+            if cls._is_high_signal_sports_candidate(
+                title=str(story.get("title") or ""),
+                source=str(story.get("source") or ""),
+                url=str(story.get("url") or ""),
+                description=" ".join(
+                    str(story.get(key) or "")
+                    for key in ("summary", "why_it_matters")
+                ),
+            ):
+                filtered.append(str(story_id))
+        return filtered
+
+    @classmethod
+    def _is_high_signal_sports_candidate(
+        cls,
+        *,
+        title: str,
+        source: str,
+        url: str,
+        description: str = "",
+    ) -> bool:
+        text = f"{title} {source} {description}".lower()
+        domain = cls._domain_name(url)
+        is_primary_sports_source = any(domain.endswith(sports_domain) for sports_domain in PRIMARY_SPORTS_DOMAINS)
+        has_sports_signal = cls._contains_any_term(text, SPORTS_SIGNAL_TERMS)
+        has_section_drift = cls._contains_any_term(text, SPORTS_SECTION_DRIFT_TERMS)
+
+        if has_section_drift and not (is_primary_sports_source or has_sports_signal):
+            return False
+        return is_primary_sports_source or has_sports_signal
+
+    @staticmethod
+    def _contains_any_term(text: str, terms: tuple[str, ...]) -> bool:
+        for term in terms:
+            if " " in term:
+                if term in text:
+                    return True
+                continue
+            if re.search(rf"\b{re.escape(term)}\b", text):
+                return True
+        return False
+
     def _normalize_widgets(
         self,
         raw_widgets: Any,
@@ -1034,14 +1533,10 @@ Sports score packet:
             for widget in raw_widgets:
                 if not isinstance(widget, dict):
                     continue
-                topic = str(widget.get("topic") or "").strip()
-                title = str(widget.get("title") or "").strip()
-                summary = str(widget.get("summary") or "").strip()
-                items = [
-                    str(item).strip()
-                    for item in widget.get("items", [])
-                    if str(item).strip()
-                ]
+                topic = _clean_text(widget.get("topic"))
+                title = _trim_words(widget.get("title"), 5)
+                summary = _trim_words(widget.get("summary"), 24)
+                items = _trim_items(widget.get("items", []), max_items=5, max_words=12)
                 if not topic or (not summary and not items):
                     continue
                 if topic in seen_topics:
@@ -1051,7 +1546,7 @@ Sports score packet:
                         "topic": topic,
                         "title": title or self._topic_name(topic),
                         "summary": summary,
-                        "items": items[:5],
+                        "items": items,
                     }
                 )
                 seen_topics.add(topic)
@@ -1074,8 +1569,8 @@ Sports score packet:
                 {
                     "topic": topic,
                     "title": self._topic_name(topic),
-                    "summary": summary[:260],
-                    "items": items[:5],
+                    "summary": _trim_words(summary, 24),
+                    "items": _trim_items(items, max_items=5, max_words=12),
                 }
             )
             seen_topics.add(topic)
@@ -1164,6 +1659,47 @@ Sports score packet:
         self._publish_legacy_summary(db, payload)
         self._refresh_custom_widget_requests(db, payload)
         print(f"Published daily brief to Firestore document daily_briefs/{doc_id}")
+
+    def refresh_latest_firestore_sports_scores(self) -> dict[str, Any]:
+        import firebase_admin
+        from firebase_admin import firestore
+
+        if not firebase_admin._apps:
+            cred_obj = self._firebase_credentials()
+            firebase_admin.initialize_app(cred_obj)
+
+        db = firestore.client()
+        score_cards = self._fetch_top_sports_scores()[:6]
+        refreshed_at = datetime.now(timezone.utc)
+
+        latest_docs = list(
+            db.collection("daily_briefs")
+            .order_by("generated_at", direction=firestore.Query.DESCENDING)
+            .limit(1)
+            .stream()
+        )
+        if not latest_docs:
+            return {
+                "success": False,
+                "error": "No daily_briefs documents found",
+                "scores_count": len(score_cards),
+            }
+
+        doc = latest_docs[0]
+        update_payload = {
+            "sports_scores": score_cards,
+            "sports_scores_refreshed_at": refreshed_at,
+            "sports_scores_source": "ESPN",
+        }
+        doc.reference.set(update_payload, merge=True)
+        db.collection("daily_brief_history").document(doc.id).set(update_payload, merge=True)
+
+        return {
+            "success": True,
+            "doc_id": doc.id,
+            "scores_count": len(score_cards),
+            "refreshed_at": refreshed_at.isoformat(),
+        }
 
     def _refresh_custom_widget_requests(self, db: Any, brief: dict[str, Any]) -> None:
         if not self.gemini_key:
@@ -1271,10 +1807,12 @@ Existing daily brief context:
 
 Rules:
 - Use Google Search for current facts.
-- Keep it concise and scannable for a phone widget.
+- Keep it concise and scannable for a phone widget. Every word must earn its place.
 - Include only facts that are relevant to the user's request.
 - If the request is too broad, choose the most important current angle.
 - Return JSON with title, summary, and 3 to 5 short items.
+- title: 5 words max. summary: 24 words max. items: 12 words max each.
+- Avoid filler, generic caveats, markdown, and phrases like "continues to unfold".
 - Do not mention that you used Search.
 
 Preferred title, if useful: {requested_title or "none"}
@@ -1324,19 +1862,15 @@ Generated at: {generated_at}
                         config=config,
                     )
                     payload = self._parse_json_response(response.text)
-                    title = str(payload.get("title") or requested_title or prompt[:48]).strip()
-                    summary = str(payload.get("summary") or "").strip()
-                    items = [
-                        str(item).strip()
-                        for item in payload.get("items", [])
-                        if str(item).strip()
-                    ][:5]
+                    title = _trim_words(payload.get("title") or requested_title or prompt[:48], 5)
+                    summary = _trim_words(payload.get("summary") or "", 24)
+                    items = _trim_items(payload.get("items", []), max_items=5, max_words=12)
                     if not summary and not items:
                         raise RuntimeError("Gemini returned an empty custom widget")
                     return {
                         "topic": "CUSTOM",
                         "title": title[:80],
-                        "summary": summary[:400],
+                        "summary": summary[:280],
                         "items": items,
                         "prompt": prompt,
                         "model_used": f"{model}-{mode}",
@@ -1463,26 +1997,20 @@ Generated at: {generated_at}
         score = 10
         title_lower = candidate.title.lower()
         if any(term in title_lower for term in ("live updates", "what to know", "latest")):
+            score -= 1.5
+        if any(term in title_lower for term in ("explainer", "analysis", "why it matters")):
             score += 1
         if candidate.description:
             score += 2
         if candidate.published_at:
-            score += 2
+            score += 2 + DailyBriefPipeline._recency_score(candidate.published_at)
         if candidate.image_url:
             score += 1
-        trusted_domains = (
-            "apnews.com",
-            "reuters.com",
-            "npr.org",
-            "bbc.com",
-            "wsj.com",
-            "nytimes.com",
-            "washingtonpost.com",
-            "theverge.com",
-            "techcrunch.com",
-        )
-        if any(domain in candidate.url for domain in trusted_domains):
-            score += 4
+        domain = DailyBriefPipeline._domain_name(candidate.url)
+        for trusted_domain, weight in TRUSTED_SOURCE_DOMAINS.items():
+            if domain.endswith(trusted_domain):
+                score += weight
+                break
         trusted_sources = (
             "associated press",
             "ap news",
@@ -1501,7 +2029,48 @@ Generated at: {generated_at}
         )
         if any(source in candidate.source.lower() for source in trusted_sources):
             score += 4
+        if candidate.topic == "SPORTS":
+            sports_text = f"{candidate.title} {candidate.description}".lower()
+            if any(domain.endswith(sports_domain) for sports_domain in PRIMARY_SPORTS_DOMAINS):
+                score += 5
+            if DailyBriefPipeline._contains_any_term(sports_text, SPORTS_SIGNAL_TERMS):
+                score += 3
+            if DailyBriefPipeline._contains_any_term(sports_text, SPORTS_SECTION_DRIFT_TERMS):
+                score -= 8
+        if any(
+            marker in title_lower
+            for marker in (
+                "horoscope",
+                "lottery",
+                "stock market today:",
+                "fantasy football",
+                "odds",
+                "betting",
+                "watch live",
+            )
+        ):
+            score -= 5
         return score
+
+    @staticmethod
+    def _recency_score(published_at: str | None) -> float:
+        if not published_at:
+            return 0
+        try:
+            parsed = DailyBriefPipeline._parse_iso(published_at)
+        except Exception:
+            return 0
+        hours_old = max(
+            0.0,
+            (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds() / 3600,
+        )
+        if hours_old <= 6:
+            return 3
+        if hours_old <= 18:
+            return 2
+        if hours_old <= 36:
+            return 1
+        return -2
 
     @staticmethod
     def _is_low_value_title(title: str, topic_code: str) -> bool:
@@ -1537,6 +2106,49 @@ Generated at: {generated_at}
             seen_titles.add(title_key)
             result.append(candidate)
         return result
+
+    @staticmethod
+    def _diversify_articles(
+        articles: list[ArticleCandidate],
+        *,
+        limit: int,
+    ) -> list[ArticleCandidate]:
+        selected: list[ArticleCandidate] = []
+        domain_counts: dict[str, int] = {}
+        topic_counts: dict[str, int] = {}
+
+        def can_take(article: ArticleCandidate, relaxed: bool = False) -> bool:
+            domain = DailyBriefPipeline._domain_name(article.url)
+            max_domain = MAX_ARTICLES_PER_DOMAIN + (2 if relaxed else 0)
+            if domain_counts.get(domain, 0) >= max_domain:
+                return False
+            if not relaxed and topic_counts.get(article.topic, 0) >= 8:
+                return False
+            return True
+
+        for article in articles:
+            if len(selected) >= limit:
+                break
+            if not can_take(article):
+                continue
+            selected.append(article)
+            domain = DailyBriefPipeline._domain_name(article.url)
+            domain_counts[domain] = domain_counts.get(domain, 0) + 1
+            topic_counts[article.topic] = topic_counts.get(article.topic, 0) + 1
+
+        if len(selected) < min(limit, len(articles)):
+            selected_ids = {article.id for article in selected}
+            for article in articles:
+                if len(selected) >= limit:
+                    break
+                if article.id in selected_ids or not can_take(article, relaxed=True):
+                    continue
+                selected.append(article)
+                selected_ids.add(article.id)
+                domain = DailyBriefPipeline._domain_name(article.url)
+                domain_counts[domain] = domain_counts.get(domain, 0) + 1
+
+        return selected
 
     @staticmethod
     def _match_story(

@@ -326,23 +326,57 @@ class ArticleFetcher:
         if parsed.scheme not in ('http', 'https'):
             return False
 
-        # Basic extension filtering
-        valid_extensions = {'.jpg', '.jpeg', '.png', '.webp', '.avif', '.gif'}
-        path = parsed.path.lower()
-        if '.' not in path:
-            return False
-        if not any(path.endswith(ext) for ext in valid_extensions):
-            return False
-
-        # Skip very short filenames that are commonly tracking pixels
-        filename = path.split('/')[-1]
-        if len(filename) <= 6:
-            return False
-
         if cls.is_likely_logo(image_url):
             return False
 
-        return True
+        return cls._looks_like_image_resource(image_url)
+
+    @staticmethod
+    def _looks_like_image_resource(image_url):
+        """Allow modern CDN image URLs that are validated later by content-type."""
+        parsed = urlparse(image_url)
+        valid_extensions = {'.jpg', '.jpeg', '.png', '.webp', '.avif', '.gif'}
+        path = parsed.path.lower()
+
+        if any(path.endswith(ext) for ext in valid_extensions):
+            filename = path.split('/')[-1]
+            return len(filename) > 6
+
+        query = parse_qs(parsed.query.lower())
+        format_values = [
+            value
+            for key in ("format", "fm", "output", "auto")
+            for value in query.get(key, [])
+        ]
+        if any(
+            any(ext.strip(".") in value for ext in valid_extensions)
+            for value in format_values
+        ):
+            return True
+
+        media_path_markers = (
+            "/image/",
+            "/images/",
+            "/media/",
+            "/photo/",
+            "/photos/",
+            "/uploads/",
+            "/cdn-cgi/image/",
+        )
+        image_cdn_hosts = (
+            "cloudfront.net",
+            "ctfassets.net",
+            "images.unsplash.com",
+            "imgix.net",
+            "akamaized.net",
+        )
+        host = parsed.netloc.lower()
+        if any(marker in path for marker in media_path_markers):
+            return True
+        if any(host.endswith(image_host) for image_host in image_cdn_hosts):
+            return True
+
+        return False
 
     @classmethod
     def _score_image(cls, image_url):

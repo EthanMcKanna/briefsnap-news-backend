@@ -7,7 +7,8 @@ from threading import Lock
 
 from newsaggregator.config.settings import (
     FAILED_URL_RETRY_INTERVAL,
-    SUMMARY_ENRICHMENT_WORKERS
+    SUMMARY_ENRICHMENT_WORKERS,
+    LOOKBACK_PERIOD
 )
 from newsaggregator.fetchers.article_fetcher import ArticleFetcher
 from newsaggregator.fetchers.exa_fetcher import ExaFetcher
@@ -22,7 +23,7 @@ class ArticleProcessor:
         """Initialize the article processor."""
         self.article_fetcher = ArticleFetcher()
         self.exa_fetcher = ExaFetcher()
-        self.processed_urls = set()
+        self.processed_urls = {}
         self.failed_urls = {}
         self._state_lock = Lock()
         
@@ -31,6 +32,7 @@ class ArticleProcessor:
         with self._state_lock:
             self.processed_urls = FileStorage.load_processed_articles()
             self.failed_urls = FileStorage.load_failed_urls()
+            self._prune_processed_urls()
             processed = len(self.processed_urls)
             failed = len(self.failed_urls)
         print(f"Loaded {processed} processed and {failed} failed articles")
@@ -38,7 +40,7 @@ class ArticleProcessor:
     def save_state(self):
         """Save the processor state to storage."""
         with self._state_lock:
-            processed_copy = set(self.processed_urls)
+            processed_copy = dict(self.processed_urls)
             failed_copy = dict(self.failed_urls)
         FileStorage.save_processed_articles(processed_copy)
         FileStorage.save_failed_urls(failed_copy)
@@ -79,6 +81,12 @@ class ArticleProcessor:
             return None, False
 
         title = entry.get('title')
+        description = entry.get('description', '')
+
+        if self._is_probable_duplicate(title, description):
+            print(f"Skipping probable duplicate before fetch: {title}")
+            return None, False
+
         source = entry.get('source')
         date = entry.get('date')
 
@@ -161,8 +169,12 @@ class ArticleProcessor:
 
     def _can_process_url(self, url):
         with self._state_lock:
-            if url in self.processed_urls:
-                return False
+            last_seen = self.processed_urls.get(url)
+            if last_seen:
+                if time.time() - last_seen < LOOKBACK_PERIOD:
+                    return False
+                # Allow reprocessing if outside lookback window
+                del self.processed_urls[url]
             if url in self.failed_urls:
                 elapsed = time.time() - self.failed_urls[url]['timestamp']
                 if elapsed < FAILED_URL_RETRY_INTERVAL:
@@ -171,13 +183,30 @@ class ArticleProcessor:
 
     def _mark_url_processed(self, url):
         with self._state_lock:
-            self.processed_urls.add(url)
+            self.processed_urls[url] = time.time()
+            self._prune_processed_urls()
             if url in self.failed_urls:
                 del self.failed_urls[url]
 
     def _add_failed_url(self, url, reason):
         with self._state_lock:
             FileStorage.add_failed_url(self.failed_urls, url, reason)
+
+    def _is_probable_duplicate(self, title: str, description: str) -> bool:
+        if not title:
+            return False
+        try:
+            if not FirebaseStorage.get_db():
+                return False
+            return FirebaseStorage.is_duplicate_article(title, description or '')
+        except Exception:
+            return False
+
+    def _prune_processed_urls(self):
+        cutoff = time.time() - LOOKBACK_PERIOD
+        stale = [url for url, ts in self.processed_urls.items() if ts < cutoff]
+        for url in stale:
+            del self.processed_urls[url]
 
     def _enrich_story(self, story):
         story_title = story.get('StoryTitle', '')

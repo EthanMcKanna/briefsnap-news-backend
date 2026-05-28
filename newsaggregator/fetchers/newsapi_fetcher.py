@@ -2,7 +2,7 @@
 
 import time
 from datetime import datetime, timedelta
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit, urlunsplit
 from typing import List, Dict, Optional, Tuple
 from newsapi import NewsApiClient
 
@@ -76,7 +76,7 @@ class NewsAPIFetcher:
     
     def _get_source_score(self, url: str) -> int:
         """Get reliability score for a source based on URL.
-        
+
         Args:
             url: Article URL
             
@@ -85,6 +85,13 @@ class NewsAPIFetcher:
         """
         domain = urlparse(url).netloc.replace('www.', '').lower()
         return self.source_rankings.get(domain, self.source_rankings['default'])
+
+    def _normalize_url(self, url: str) -> str:
+        try:
+            parts = urlsplit(url)
+            return urlunsplit((parts.scheme, parts.netloc, parts.path, '', ''))
+        except Exception:
+            return url
     
     def _calculate_article_score(self, article: Dict, topic: str) -> float:
         """Calculate comprehensive score for article selection.
@@ -418,8 +425,9 @@ class NewsAPIFetcher:
         seen_urls = set()
         unique_articles = []
         for article in all_articles:
-            if article['url'] not in seen_urls:
-                seen_urls.add(article['url'])
+            normalized_url = self._normalize_url(article['url'])
+            if normalized_url not in seen_urls:
+                seen_urls.add(normalized_url)
                 unique_articles.append(article)
         
         # Score and rank articles

@@ -5,13 +5,48 @@ import os
 import sys
 import traceback
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 import pytz
-from newsaggregator.fetchers.sports_fetcher import SportsFetcher
+from newsaggregator.fetchers.sports_fetcher import APP_NEWS_LEAGUE_CODES, SportsFetcher
 from newsaggregator.storage.sports_storage import SportsStorage
 from newsaggregator.processors.sports_news_summarizer import SportsNewsSummarizer
 from newsaggregator.processors.game_summary_processor import GameSummaryProcessor
 from newsaggregator.config.settings import DATA_DIR
+
+NEWS_SUMMARY_STALE_HOURS = 5
+
+
+def _parse_news_timestamp(value):
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    if isinstance(value, str) and value.strip():
+        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    return None
+
+
+def _latest_news_age_hours(news_summaries):
+    latest_timestamp = None
+    for summary_data in news_summaries.values():
+        timestamp = None
+        for key in ('timestamp', 'generated_at'):
+            try:
+                timestamp = _parse_news_timestamp(summary_data.get(key))
+            except (TypeError, ValueError):
+                timestamp = None
+            if timestamp:
+                break
+        if timestamp and (latest_timestamp is None or timestamp > latest_timestamp):
+            latest_timestamp = timestamp
+
+    if not latest_timestamp:
+        return None
+    return (datetime.now(timezone.utc) - latest_timestamp).total_seconds() / 3600
+
 
 def main():
     """Main function to run the sports aggregator."""
@@ -33,50 +68,39 @@ def main():
         # Generate summary
         summary = sports_fetcher.get_games_summary(all_games)
         
-        # Generate sports news summaries only a few times per day (every 6 hours) - Central Time
+        # Generate sports news summaries every six hours, and immediately if the
+        # stored summaries are stale because a previous scheduled run missed.
         central_tz = pytz.timezone('US/Central')
         current_time_central = datetime.now(central_tz)
         current_hour_central = current_time_central.hour
-        should_generate_news = current_hour_central in [6, 12, 18, 0]  # 6 AM, 12 PM, 6 PM, Midnight Central Time
-        needs_update = False
+        is_scheduled_news_hour = current_hour_central in [6, 12, 18, 0]
+        existing_summaries = SportsStorage.get_latest_news_summaries()
+        latest_news_age = _latest_news_age_hours(existing_summaries)
+        needs_update = latest_news_age is None or latest_news_age >= NEWS_SUMMARY_STALE_HOURS
+        should_generate_news = is_scheduled_news_hour or needs_update
         
         news_summaries = {}
+        generated_new_news_summaries = False
         if should_generate_news:
-            print(f"\n====== Generating Sports News Summaries (scheduled at {current_hour_central}:00 Central Time) ======")
-            
-            # Check if we already have recent summaries (within last 5 hours)
-            existing_summaries = SportsStorage.get_latest_news_summaries()
-            needs_update = True
-            
-            if existing_summaries:
-                # Check timestamp of most recent summary
-                latest_timestamp = None
-                for summary_data in existing_summaries.values():
-                    timestamp_str = summary_data.get('generated_at')
-                    if timestamp_str:
-                        try:
-                            summary_time = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
-                            if latest_timestamp is None or summary_time > latest_timestamp:
-                                latest_timestamp = summary_time
-                        except:
-                            continue
-                
-                if latest_timestamp:
-                    hours_since_last = (datetime.now() - latest_timestamp.replace(tzinfo=None)).total_seconds() / 3600
-                    if hours_since_last < 5:
-                        needs_update = False
-                        print(f"Recent news summaries found ({hours_since_last:.1f} hours ago), skipping generation")
-            
             if needs_update:
-                news_summarizer = SportsNewsSummarizer()
-                news_summaries = news_summarizer.generate_all_sports_summaries(all_games)
+                reason = "stale or missing" if latest_news_age is None else f"{latest_news_age:.1f} hours old"
+                print(f"\n====== Generating Sports News Summaries ({reason}) ======")
+                try:
+                    news_summarizer = SportsNewsSummarizer()
+                    news_summaries = news_summarizer.generate_all_sports_summaries(
+                        all_games,
+                        sport_codes=list(APP_NEWS_LEAGUE_CODES),
+                    )
+                    generated_new_news_summaries = bool(news_summaries)
+                except Exception as exc:
+                    print(f"⚠️ Sports news summaries skipped: {exc}")
+                    news_summaries = {}
             else:
+                print(f"\n====== Sports News Summaries (fresh: {latest_news_age:.1f} hours old) ======")
                 news_summaries = existing_summaries
         else:
-            print(f"\n====== Sports News Summaries (skipped - not scheduled at {current_hour_central}:00 Central Time) ======")
-            print("News summaries are generated at 6 AM, 12 PM, 6 PM, and Midnight Central Time")
-            # Get existing summaries for display
-            news_summaries = SportsStorage.get_latest_news_summaries()
+            print(f"\n====== Sports News Summaries (fresh; skipped at {current_hour_central}:00 Central Time) ======")
+            news_summaries = existing_summaries
         
         # Log summary
         print(f"\n====== Sports Data Summary ======")
@@ -116,7 +140,7 @@ def main():
             print(f"Saved news summaries to: {news_summaries_file}")
             
             # Only store in Firebase if we generated new summaries (not cached ones)
-            if should_generate_news and needs_update:
+            if generated_new_news_summaries:
                 print("Storing new sports news summaries...")
                 news_success = SportsStorage.store_news_summaries(news_summaries)
                 if news_success:
@@ -135,8 +159,18 @@ def main():
             
             # Process game summaries after storing sports data
             print("\n====== Processing Game Summaries ======")
-            game_summary_processor = GameSummaryProcessor()
-            summary_results = game_summary_processor.process_game_summaries()
+            try:
+                game_summary_processor = GameSummaryProcessor()
+                summary_results = game_summary_processor.process_game_summaries()
+            except Exception as exc:
+                print(f"⚠️ Game summaries skipped: {exc}")
+                summary_results = {
+                    'pre_game_generated': 0,
+                    'post_game_generated': 0,
+                    'pre_game_skipped': 0,
+                    'post_game_skipped': 0,
+                    'errors': [str(exc)],
+                }
             
             # Save game summary results
             if summary_results['pre_game_generated'] > 0 or summary_results['post_game_generated'] > 0:
@@ -204,6 +238,9 @@ def main():
                     print("\nBy sport:")
                     for sport, sport_stats in stats['by_sport'].items():
                         print(f"  {sport_stats['sport_name']}: {sport_stats['total']} total, {sport_stats['upcoming']} upcoming")
+        else:
+            print("❌ Failed to store sports data in Firebase")
+            return 1
         
         # Display news summaries if generated
         if news_summaries:
@@ -220,8 +257,7 @@ def main():
                 print()  # Extra line for readability
         
         else:
-            print("❌ Failed to store sports data in Firebase")
-            return 1
+            print("\nNo sports news summaries available for display")
         
         end_time = datetime.now()
         duration = end_time - start_time
@@ -235,4 +271,4 @@ def main():
         return 1
 
 if __name__ == "__main__":
-    sys.exit(main()) 
+    sys.exit(main())

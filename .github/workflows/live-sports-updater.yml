@@ -2,26 +2,24 @@ name: Live Sports Updater
 
 on:
   schedule:
-    # Run every 5 minutes during US sports hours (11 AM ET - 2 AM ET)
-    # Covers 15:00-06:00 UTC (11 AM EDT - 2 AM EDT) and 16:00-07:00 UTC (11 AM EST - 2 AM EST)
-    - cron: '*/5 15-23,0-6 * * *'  # Main sports window
-    # Also run every 10 minutes during weekend afternoons (earlier college games)
-    - cron: '*/10 14-23,0-6 * * 6,0'  # Saturday/Sunday extended hours
+    # Keep the score freshness contract alive at all hours. The updater is
+    # lightweight and also expires stale live records when ESPN has no games.
+    - cron: '*/5 * * * *'
   workflow_dispatch:  # Allow manual triggering
 
 jobs:
   update-live-sports:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
-        
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
-          
+
       - name: Cache pip dependencies
         uses: actions/cache@v3
         with:
@@ -29,19 +27,19 @@ jobs:
           key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-
-          
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      
+
       - name: Create Firebase credentials file
         env:
           FIREBASE_CREDENTIALS_JSON: ${{ secrets.FIREBASE_CREDENTIALS }}
         run: |
           # Write to file using a Python script to ensure proper formatting
           python -c "import os, json; open('firebase-credentials.json', 'w').write(os.environ['FIREBASE_CREDENTIALS_JSON'])"
-          
+
       - name: Run Live Sports Updater
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -52,11 +50,11 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: python main_live_sports.py
-        
+
       - name: Upload live update data
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: live-sports-update-${{ github.run_number }}
           path: data/sports_data/live_updates/
-          retention-days: 1  # Short retention since these are frequent updates 
+          retention-days: 1  # Short retention since these are frequent updates

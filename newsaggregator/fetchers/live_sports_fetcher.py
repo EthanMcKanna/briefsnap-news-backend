@@ -2,7 +2,8 @@
 
 import requests
 import json
-from datetime import datetime, timedelta
+import os
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
 import time
 
@@ -17,13 +18,13 @@ class LiveSportsFetcher:
         
         # ESPN API endpoints for different sports
         self.espn_endpoints = {
-            'nfl': 'http://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard',
-            'nba': 'http://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard',
-            'mlb': 'http://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard',
-            'nhl': 'http://site.api.espn.com/apis/site/v2/sports/hockey/nhl/scoreboard',
-            'ncaaf': 'http://site.api.espn.com/apis/site/v2/sports/football/college-football/scoreboard',
-            'ncaab': 'http://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard',
-            'mls': 'http://site.api.espn.com/apis/site/v2/sports/soccer/usa.1/scoreboard',
+            'nfl': 'https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard',
+            'nba': 'https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard',
+            'mlb': 'https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard',
+            'nhl': 'https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/scoreboard',
+            'ncaaf': 'https://site.api.espn.com/apis/site/v2/sports/football/college-football/scoreboard',
+            'ncaab': 'https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard',
+            'mls': 'https://site.api.espn.com/apis/site/v2/sports/soccer/usa.1/scoreboard',
         }
         
         # Sport display names
@@ -57,19 +58,27 @@ class LiveSportsFetcher:
             print(f"Sport '{sport}' not supported")
             return []
         
-        # Check both today and yesterday for live games (games can span midnight)
-        today = datetime.now().strftime('%Y%m%d')
-        yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y%m%d')
+        # Check both today and yesterday in UTC; late games can span midnight.
+        now = datetime.now(timezone.utc)
+        today = now.strftime('%Y%m%d')
+        yesterday = (now - timedelta(days=1)).strftime('%Y%m%d')
         dates_to_check = [yesterday, today]
         
         live_games = []
         
         for date in dates_to_check:
             try:
-                url = f"{self.espn_endpoints[sport]}?dates={date}"
                 print(f"Checking for live {sport.upper()} games on {date}...")
                 
-                response = self.session.get(url, timeout=8)
+                response = self.session.get(
+                    self.espn_endpoints[sport],
+                    params={
+                        'dates': date,
+                        'limit': 120,
+                        'enable': 'linescores,leaders,statistics,situation,odds,broadcasts',
+                    },
+                    timeout=8,
+                )
                 response.raise_for_status()
                 
                 data = response.json()
@@ -107,14 +116,26 @@ class LiveSportsFetcher:
             True if game is live or recently finished, False otherwise
         """
         try:
-            status = event.get('status', {}).get('type', {}).get('description', '')
-            status_lower = status.lower()
+            status_type = event.get('status', {}).get('type', {})
+            status = status_type.get('description', '')
+            state = (status_type.get('state') or '').lower()
+            completed = bool(status_type.get('completed'))
+            status_lower = " ".join(
+                str(value).lower()
+                for value in (
+                    status,
+                    status_type.get('shortDetail'),
+                    status_type.get('detail'),
+                    event.get('status', {}).get('displayClock'),
+                )
+                if value
+            )
             
             # Check for live status keywords
-            is_live = any(keyword in status_lower for keyword in self.live_status_keywords)
+            is_live = state == 'in' or any(keyword.lower() in status_lower for keyword in self.live_status_keywords)
             
-            # Also check for recently finished games
-            is_recently_finished = status in ['Final', 'Final/OT', 'Final/SO', 'Completed']
+            # Also check for games that just finished so the final score lands quickly.
+            is_recently_finished = completed and self._event_within_hours(event, hours=10)
             
             return is_live or is_recently_finished
             
@@ -143,18 +164,35 @@ class LiveSportsFetcher:
             Essential game data dictionary or None
         """
         try:
+            status_payload = event.get('status', {})
+            status_type = status_payload.get('type', {})
+            state = status_type.get('state')
+            completed = bool(status_type.get('completed'))
+
             game = {
                 'id': event.get('id'),
                 'sport': self.sport_names.get(sport, sport.upper()),
                 'sport_code': sport,
+                'league': {
+                    'code': sport,
+                    'name': self.sport_names.get(sport, sport.upper()),
+                },
+                'name': event.get('name'),
+                'short_name': event.get('shortName'),
                 'date': event.get('date'),
-                'status': event.get('status', {}).get('type', {}).get('description', 'TBD'),
+                'status': status_type.get('description') or status_type.get('detail') or 'TBD',
+                'status_id': status_type.get('id'),
+                'status_state': state,
+                'status_short': status_type.get('shortDetail'),
+                'status_detail': status_type.get('detail'),
+                'is_live': state == 'in',
+                'is_final': completed or state == 'post',
                 'home_team': None,
                 'away_team': None,
                 'home_score': None,
                 'away_score': None,
                 'time_remaining': None,
-                'last_updated': datetime.now(),
+                'last_updated': datetime.now(timezone.utc),
             }
             
             # Parse essential team and score data
@@ -166,8 +204,15 @@ class LiveSportsFetcher:
                     for competitor in competition['competitors']:
                         team_info = {
                             'id': competitor.get('id'),
+                            'uid': competitor.get('uid'),
                             'name': competitor.get('team', {}).get('displayName'),
+                            'location': competitor.get('team', {}).get('location'),
                             'abbreviation': competitor.get('team', {}).get('abbreviation'),
+                            'logo': competitor.get('team', {}).get('logo'),
+                            'record': self._record_summary(competitor.get('records')),
+                            'homeAway': competitor.get('homeAway'),
+                            'winner': competitor.get('winner'),
+                            'linescores': competitor.get('linescores') or [],
                         }
                         
                         score = competitor.get('score')
@@ -183,10 +228,17 @@ class LiveSportsFetcher:
                 
                 # Status and time
                 status = competition.get('status', {})
-                game['status'] = status.get('type', {}).get('description', 'TBD')
+                status_type = status.get('type', {})
+                game['status'] = status_type.get('description') or status_type.get('detail') or 'TBD'
+                game['status_id'] = status_type.get('id')
+                game['status_state'] = status_type.get('state')
+                game['status_short'] = status_type.get('shortDetail')
+                game['status_detail'] = status_type.get('detail')
+                game['is_live'] = game['status_state'] == 'in'
+                game['is_final'] = bool(status_type.get('completed')) or game['status_state'] == 'post'
                 
                 # For baseball and sports with innings/periods, use detail instead of clock
-                status_detail = status.get('type', {}).get('detail', '')
+                status_detail = status_type.get('detail', '')
                 if status_detail and sport in ['mlb']:
                     # Use the inning info for baseball (e.g., "Bottom 7th")
                     game['time_remaining'] = status_detail
@@ -201,6 +253,8 @@ class LiveSportsFetcher:
                 try:
                     dt = datetime.fromisoformat(game['date'].replace('Z', '+00:00'))
                     game['timestamp'] = dt.timestamp()
+                    game['formatted_date'] = dt.strftime('%Y-%m-%d')
+                    game['formatted_time'] = dt.strftime('%I:%M %p UTC')
                 except:
                     pass
             
@@ -209,6 +263,23 @@ class LiveSportsFetcher:
         except Exception as e:
             print(f"Error parsing live ESPN game: {e}")
             return None
+
+    @staticmethod
+    def _record_summary(records: Optional[List[Dict]]) -> str:
+        for record in records or []:
+            summary = record.get('summary')
+            if summary:
+                return summary
+        return ''
+
+    @staticmethod
+    def _event_within_hours(event: Dict, hours: int) -> bool:
+        try:
+            event_date = datetime.fromisoformat(event.get('date', '').replace('Z', '+00:00'))
+        except Exception:
+            return False
+        age_seconds = (datetime.now(timezone.utc) - event_date.astimezone(timezone.utc)).total_seconds()
+        return 0 <= age_seconds <= hours * 3600
     
     def fetch_all_live_games(self) -> Dict[str, List[Dict]]:
         """Fetch live games for all supported sports.
@@ -282,7 +353,7 @@ class LiveSportsFetcher:
                         'time_remaining': game.get('time_remaining', ''),
                     }
                     
-                    if status in ['Final', 'Final/OT', 'Final/SO', 'Completed']:
+                    if game.get('is_final') or status in ['Final', 'Final/OT', 'Final/SO', 'Completed']:
                         sport_finished += 1
                         summary['finished_games_detail'].append(game_detail)
                     else:
@@ -299,44 +370,9 @@ class LiveSportsFetcher:
         return summary
     
     def should_check_for_live_games(self) -> bool:
-        """Determine if we should check for live games based on US Eastern Time.
-        
-        Sports typically happen during certain hours (US Eastern Time):
-        - NFL: Sunday 1PM-11PM ET, Monday/Thursday 8PM-11PM ET
-        - NBA/NHL: 7PM-11PM ET most nights
-        - MLB: 7PM-11PM ET most nights, some day games
-        - College: Afternoons and evenings, weekends
-        
-        Returns:
-            True if it's likely time for live sports, False otherwise
-        """
-        # Convert UTC to US Eastern Time for proper sports scheduling
-        import pytz
-        utc_now = datetime.now(pytz.UTC)
-        eastern = pytz.timezone('US/Eastern')
-        et_now = utc_now.astimezone(eastern)
-        
-        hour = et_now.hour
-        weekday = et_now.weekday()  # 0=Monday, 6=Sunday
-        
-        print(f"Current time: {et_now.strftime('%Y-%m-%d %I:%M %p %Z')} (Hour: {hour})")
-        
-        # Always check during prime sports hours (11 AM - 2 AM ET)
-        # This covers lunch games, afternoon games, evening games, and late night games
-        if 11 <= hour <= 23 or 0 <= hour <= 2:
-            print(f"✅ Within main sports hours (11 AM - 2 AM ET)")
-            return True
-        
-        # Extended weekend hours for college sports (10 AM - 2 AM ET)
-        if weekday in [5, 6] and (10 <= hour <= 23 or 0 <= hour <= 2):  # Saturday/Sunday
-            print(f"✅ Within weekend sports hours (10 AM - 2 AM ET)")
-            return True
-        
-        # Skip very early morning hours when games are extremely rare (3 AM - 9 AM ET)
-        if 3 <= hour <= 9:
-            print(f"⏰ Skipping early morning hours (3 AM - 9 AM ET) - rare for live games")
+        """Return whether the lightweight ESPN freshness pass should run."""
+        if str(os.environ.get("BRIEFSNAP_DISABLE_LIVE_SPORTS", "")).lower() in {"1", "true", "yes"}:
+            print("Live sports updates disabled by BRIEFSNAP_DISABLE_LIVE_SPORTS")
             return False
-        
-        # Default to checking (should rarely hit this case with the above ranges)
-        print(f"✅ Default check (outside specific hours but allowing)")
-        return True 
+        print("✅ Running live sports freshness check")
+        return True

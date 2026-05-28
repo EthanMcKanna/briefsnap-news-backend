@@ -432,9 +432,17 @@ class SportsStorage:
             for doc in all_games:
                 game_data = doc.to_dict()
                 status = game_data.get('status', '').lower()
+                state = str(game_data.get('status_state') or '').lower()
+                last_seen = cls._coerce_datetime(game_data.get('last_checked_at') or game_data.get('last_updated'))
+                if not last_seen or datetime.now(timezone.utc) - last_seen > timedelta(minutes=20):
+                    continue
                 
                 # Check if game is currently live/in-progress
-                if any(keyword in status for keyword in ['live', 'in progress', 'active', '1st', '2nd', '3rd', '4th', 'quarter', 'period', 'inning', 'half']):
+                if (
+                    game_data.get('is_live') is True
+                    or state == 'in'
+                    or any(keyword in status for keyword in ['live', 'in progress', 'active', '1st', '2nd', '3rd', '4th', 'quarter', 'period', 'inning', 'half'])
+                ):
                     live_games.append(game_data)
             
             # Sort by last_updated (most recently updated first)
@@ -695,12 +703,15 @@ class SportsStorage:
                 'success': True,
                 'total_processed': 0,
                 'games_updated': 0,
+                'games_created': 0,
                 'games_skipped': 0,
                 'games_not_found': 0,
+                'stale_games_expired': 0,
                 'by_sport': {},
                 'live_games_found': [],
                 'updates_made': []
             }
+            seen_doc_ids: Set[str] = set()
             
             for sport, games in live_games.items():
                 sport_stats = {
@@ -719,16 +730,33 @@ class SportsStorage:
                     
                     # Create document ID
                     doc_id = f"{sport}_{game['id']}"
+                    seen_doc_ids.add(doc_id)
                     doc_ref = db.collection(cls.SPORTS_GAMES_COLLECTION).document(doc_id)
                     
                     # Check if game exists
                     existing_doc = doc_ref.get()
                     
                     if not existing_doc.exists:
-                        # Game doesn't exist in database, skip live update
-                        update_stats['games_not_found'] += 1
-                        sport_stats['not_found'] += 1
-                        print(f"Skipping {sport.upper()} game {game.get('away_team', {}).get('abbreviation', 'TBD')} @ {game.get('home_team', {}).get('abbreviation', 'TBD')} - not in database")
+                        game_data = game.copy()
+                        game_data.update({
+                            'doc_id': doc_id,
+                            'first_seen': timestamp,
+                            'last_updated': timestamp,
+                            'last_checked_at': timestamp,
+                            'update_count': 0,
+                            'live_update': True,
+                            'stored_from_live_update': True,
+                        })
+                        doc_ref.set(game_data, merge=True)
+                        update_stats['games_created'] += 1
+                        sport_stats['updated'] += 1
+                        game_info = cls._live_game_info(sport, game, ['created from live scoreboard'])
+                        update_stats['updates_made'].append(game_info)
+                        update_stats['live_games_found'].append(game_info)
+                        print(
+                            f"🔴 Created live {sport.upper()} game: "
+                            f"{game_info['away_team']} {game_info['score']} {game_info['home_team']}"
+                        )
                         continue
                     
                     existing_data = existing_doc.to_dict()
@@ -736,17 +764,21 @@ class SportsStorage:
                     # Prepare minimal update data focused on live changes
                     update_data = {
                         'status': game.get('status'),
+                        'status_id': game.get('status_id'),
+                        'status_state': game.get('status_state'),
+                        'status_short': game.get('status_short'),
+                        'status_detail': game.get('status_detail'),
+                        'is_live': game.get('is_live'),
+                        'is_final': game.get('is_final'),
                         'home_score': game.get('home_score'),
                         'away_score': game.get('away_score'),
+                        'home_team': game.get('home_team'),
+                        'away_team': game.get('away_team'),
                         'time_remaining': game.get('time_remaining'),
                         'last_updated': timestamp,
+                        'last_checked_at': timestamp,
+                        'live_update': True,
                     }
-                    
-                    # Update team scores if available
-                    if game.get('home_team', {}).get('score') is not None:
-                        update_data['home_team.score'] = game['home_team']['score']
-                    if game.get('away_team', {}).get('score') is not None:
-                        update_data['away_team.score'] = game['away_team']['score']
                     
                     # Check if update is needed using focused live game criteria
                     needs_update = cls._needs_live_update(existing_data, update_data)
@@ -768,20 +800,20 @@ class SportsStorage:
                             sport_stats['updated'] += 1
                             
                             # Track the update for logging
-                            game_info = {
-                                'sport': sport.upper(),
-                                'away_team': game.get('away_team', {}).get('abbreviation', 'TBD'),
-                                'home_team': game.get('home_team', {}).get('abbreviation', 'TBD'),
-                                'changes': changes,
-                                'score': f"{game.get('away_score', 0)}-{game.get('home_score', 0)}",
-                                'status': game.get('status'),
-                                'time_remaining': game.get('time_remaining', '')
-                            }
+                            game_info = cls._live_game_info(sport, game, changes)
                             update_stats['updates_made'].append(game_info)
                             update_stats['live_games_found'].append(game_info)
                             
                             print(f"🔴 Updated live {sport.upper()} game: {game_info['away_team']} {game.get('away_score', 0)} - {game.get('home_score', 0)} {game_info['home_team']} ({', '.join(changes)})")
                         else:
+                            doc_ref.set(
+                                {
+                                    'last_checked_at': timestamp,
+                                    'last_updated': timestamp,
+                                    'live_update': True,
+                                },
+                                merge=True,
+                            )
                             update_stats['games_skipped'] += 1
                             sport_stats['skipped'] += 1
                     else:
@@ -790,14 +822,180 @@ class SportsStorage:
                 
                 if sport_stats['processed'] > 0:
                     update_stats['by_sport'][sport] = sport_stats
-            
-            print(f"Live games update complete: {update_stats['games_updated']} updated, {update_stats['games_skipped']} skipped, {update_stats['games_not_found']} not found in database")
+
+            expired = cls._expire_stale_live_games(db, timestamp, seen_doc_ids)
+            update_stats['stale_games_expired'] = expired
+            archived_finals = cls.archive_stale_final_scores(now=timestamp)
+            update_stats['stale_final_scores_archived'] = archived_finals
+
+            print(
+                "Live games update complete: "
+                f"{update_stats['games_created']} created, "
+                f"{update_stats['games_updated']} updated, "
+                f"{update_stats['games_skipped']} checked with no changes, "
+                f"{expired} stale live games expired, "
+                f"{archived_finals} stale final scores archived"
+            )
             
             return update_stats
             
         except Exception as e:
             print(f"Error updating live games: {e}")
             return {'success': False, 'error': str(e)}
+
+    @staticmethod
+    def _live_game_info(sport: str, game: Dict, changes: List[str]) -> Dict:
+        return {
+            'sport': sport.upper(),
+            'away_team': game.get('away_team', {}).get('abbreviation', 'TBD'),
+            'home_team': game.get('home_team', {}).get('abbreviation', 'TBD'),
+            'changes': changes,
+            'score': f"{game.get('away_score', 0)}-{game.get('home_score', 0)}",
+            'status': game.get('status'),
+            'time_remaining': game.get('time_remaining', '')
+        }
+
+    @classmethod
+    def _expire_stale_live_games(
+        cls,
+        db,
+        timestamp: datetime,
+        seen_doc_ids: Set[str],
+        max_age_minutes: int = 20,
+    ) -> int:
+        """Clear live flags for games no longer present in the latest ESPN pass."""
+        cutoff = timestamp - timedelta(minutes=max_age_minutes)
+        expired = 0
+
+        for doc in db.collection(cls.SPORTS_GAMES_COLLECTION).stream():
+            if doc.id in seen_doc_ids:
+                continue
+
+            game = doc.to_dict()
+            status = str(game.get('status') or '').lower()
+            state = str(game.get('status_state') or '').lower()
+            looks_live = (
+                game.get('is_live') is True
+                or state == 'in'
+                or any(keyword in status for keyword in ['live', 'in progress', 'active', 'quarter', 'period', 'inning', 'half'])
+            )
+            if not looks_live:
+                continue
+
+            last_seen = cls._coerce_datetime(game.get('last_checked_at') or game.get('last_updated'))
+            if last_seen and last_seen > cutoff:
+                continue
+
+            doc.reference.set(
+                {
+                    'is_live': False,
+                    'status_state': 'stale',
+                    'status': 'Awaiting refresh',
+                    'time_remaining': None,
+                    'last_checked_at': timestamp,
+                    'stale_live_expired_at': timestamp,
+                    'live_update': True,
+                },
+                merge=True,
+            )
+            expired += 1
+
+        if expired:
+            print(f"Expired {expired} stale live game(s)")
+        return expired
+
+    @classmethod
+    def archive_stale_final_scores(
+        cls,
+        now: Optional[datetime] = None,
+        max_age_hours: int = 36,
+        batch_size: int = 500,
+    ) -> int:
+        """Hide old final scores from clients that query status == Final without an age window."""
+        db = FirebaseStorage.get_db()
+        if not db:
+            return 0
+
+        timestamp = now or datetime.now(timezone.utc)
+        cutoff_ts = (timestamp - timedelta(hours=max_age_hours)).timestamp()
+
+        def is_stale_final(game: Dict) -> bool:
+            if str(game.get('status') or '').lower() != 'final':
+                return False
+            raw_ts = game.get('timestamp')
+            try:
+                game_ts = float(raw_ts)
+            except (TypeError, ValueError):
+                return True
+            return game_ts < cutoff_ts
+
+        try:
+            sport_codes = ('nfl', 'ncaaf', 'nba', 'wnba', 'ncaab', 'mlb', 'nhl', 'mls')
+            per_sport_limit = max(10, batch_size // len(sport_codes))
+            stale_docs = []
+            for sport_code in sport_codes:
+                stale_docs.extend(
+                    db.collection(cls.SPORTS_GAMES_COLLECTION)
+                    .where('sport_code', '==', sport_code)
+                    .where('timestamp', '<', cutoff_ts)
+                    .where('status', '==', 'Final')
+                    .order_by('timestamp', direction=firestore.Query.DESCENDING)
+                    .limit(per_sport_limit)
+                    .stream()
+                )
+            stale_docs = stale_docs[:batch_size]
+        except Exception as exc:
+            print(f"Indexed stale final query failed, falling back to status scan: {exc}")
+            stale_docs = [
+                doc
+                for doc in db.collection(cls.SPORTS_GAMES_COLLECTION)
+                .where('status', '==', 'Final')
+                .limit(batch_size * 4)
+                .stream()
+                if is_stale_final(doc.to_dict())
+            ][:batch_size]
+
+        archived = 0
+        batch = db.batch()
+        pending_writes = 0
+        for doc in stale_docs:
+            batch.set(
+                doc.reference,
+                {
+                    'status': 'Archived Final',
+                    'archived_final_at': timestamp,
+                    'last_checked_at': timestamp,
+                    'live_update': True,
+                },
+                merge=True,
+            )
+            archived += 1
+            pending_writes += 1
+            if pending_writes >= FIRESTORE_BATCH_WRITE_LIMIT:
+                batch.commit()
+                batch = db.batch()
+                pending_writes = 0
+
+        if pending_writes:
+            batch.commit()
+
+        if archived:
+            print(f"Archived {archived} stale final score(s) older than {max_age_hours}h")
+        return archived
+
+    @staticmethod
+    def _coerce_datetime(value) -> Optional[datetime]:
+        if isinstance(value, datetime):
+            return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        if isinstance(value, (int, float)):
+            return datetime.fromtimestamp(value, tz=timezone.utc)
+        if isinstance(value, str):
+            try:
+                parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+                return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+            except ValueError:
+                return None
+        return None
     
     @classmethod
     def _needs_live_update(cls, existing_data: Dict, update_data: Dict) -> bool:

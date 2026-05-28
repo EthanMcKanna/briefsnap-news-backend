@@ -6,6 +6,7 @@ import sys
 import traceback
 import json
 from datetime import datetime
+from newsaggregator.briefs.pipeline import DailyBriefPipeline, PipelineOptions
 from newsaggregator.fetchers.live_sports_fetcher import LiveSportsFetcher
 from newsaggregator.storage.sports_storage import SportsStorage
 from newsaggregator.config.settings import DATA_DIR
@@ -23,19 +24,26 @@ def main():
         # Initialize the live sports fetcher
         live_fetcher = LiveSportsFetcher()
         
-        # Check if it's a good time to look for live games
-        if not live_fetcher.should_check_for_live_games():
-            print("Not typical sports hours - skipping live update check")
-            print("Live updates run during prime sports hours (12 PM - midnight ET)")
-            return 0
-        
-        print("Checking for live games across all sports...")
-        
-        # Fetch only live games (much faster than full fetch)
-        all_live_games = live_fetcher.fetch_all_live_games()
-        
-        # Generate live games summary
-        live_summary = live_fetcher.get_live_games_summary(all_live_games)
+        # Check if it's a good time to look for live games. Even outside the
+        # live window, keep cleanup and daily-brief score refreshes running so
+        # morning slates do not depend on yesterday's final-score cards.
+        if live_fetcher.should_check_for_live_games():
+            print("Checking for live games across all sports...")
+            all_live_games = live_fetcher.fetch_all_live_games()
+            live_summary = live_fetcher.get_live_games_summary(all_live_games)
+        else:
+            print("Outside prime live-game hours - skipping live scoreboard poll")
+            print("Still refreshing brief score cards and expiring stale records")
+            all_live_games = {}
+            live_summary = {
+                'total_games': 0,
+                'total_live_games': 0,
+                'total_finished_games': 0,
+                'sports_with_games': 0,
+                'by_sport': {},
+                'live_games_detail': [],
+                'finished_games_detail': [],
+            }
         
         print(f"\n====== Live/Recent Games Summary ======")
         print(f"Total games found: {live_summary['total_games']}")
@@ -44,8 +52,7 @@ def main():
         print(f"Sports with games: {live_summary['sports_with_games']}")
         
         if live_summary['total_games'] == 0:
-            print("No live or recently finished games found - skipping database updates")
-            return 0
+            print("No live or recently finished games found - expiring stale live records if needed")
         
         # Display games found by sport
         if live_summary['by_sport']:
@@ -83,12 +90,21 @@ def main():
             print("✅ Live games update completed successfully")
             
             # Show update statistics
-            if update_stats['games_updated'] > 0:
+            if (
+                update_stats['games_updated'] > 0
+                or update_stats.get('games_created', 0) > 0
+                or update_stats.get('stale_games_expired', 0) > 0
+                or update_stats.get('stale_final_scores_archived', 0) > 0
+            ):
                 print(f"\n📊 Update Statistics:")
                 print(f"  Games processed: {update_stats['total_processed']}")
+                print(f"  Games created: {update_stats.get('games_created', 0)}")
                 print(f"  Games updated: {update_stats['games_updated']}")
+                print(f"  Stale live games expired: {update_stats.get('stale_games_expired', 0)}")
+                print(f"  Stale final scores archived: {update_stats.get('stale_final_scores_archived', 0)}")
                 print(f"  Games skipped (no changes): {update_stats['games_skipped']}")
-                print(f"  Games not in database: {update_stats['games_not_found']}")
+                if update_stats.get('games_not_found', 0):
+                    print(f"  Games not in database: {update_stats['games_not_found']}")
                 
                 # Show updates by sport
                 if update_stats['by_sport']:
@@ -109,6 +125,23 @@ def main():
         else:
             print(f"❌ Live games update failed: {update_stats.get('error', 'Unknown error')}")
             return 1
+
+        print(f"\n====== Refreshing Daily Brief Sports Scores ======")
+        try:
+            refresh_stats = DailyBriefPipeline(
+                PipelineOptions(dry_run=True, publish=False)
+            ).refresh_latest_firestore_sports_scores()
+        except Exception as exc:
+            print(f"⚠️ Daily brief sports score refresh failed: {exc}")
+        else:
+            if refresh_stats.get("success"):
+                print(
+                    "✅ Daily brief sports scores refreshed "
+                    f"for {refresh_stats.get('doc_id')} "
+                    f"({refresh_stats.get('scores_count', 0)} game cards)"
+                )
+            else:
+                print(f"⚠️ Daily brief sports score refresh skipped: {refresh_stats.get('error')}")
         
         # Save live update data locally (lightweight)
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -156,4 +189,4 @@ def main():
         return 1
 
 if __name__ == "__main__":
-    sys.exit(main()) 
+    sys.exit(main())

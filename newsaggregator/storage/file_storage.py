@@ -170,26 +170,25 @@ class FileStorage:
     
     @staticmethod
     def load_processed_articles():
-        """Load the set of previously processed article URLs.
-        
-        Returns:
-            Set of processed article URLs
-        """
+        """Load previously processed article URLs with timestamps."""
         try:
-            with open(PROCESSED_ARTICLES_FILE, 'r') as f:
-                return set(json.load(f))
+            with open(PROCESSED_ARTICLES_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return {url: float(ts) for url, ts in data.items()}
+                if isinstance(data, list):
+                    now = time.time()
+                    return {url: now for url in data}
         except FileNotFoundError:
-            return set()
+            return {}
+        except Exception:
+            return {}
     
     @staticmethod
     def save_processed_articles(processed_urls):
-        """Save the set of processed article URLs.
-        
-        Args:
-            processed_urls: Set of processed article URLs
-        """
-        with open(PROCESSED_ARTICLES_FILE, 'w') as f:
-            json.dump(list(processed_urls), f)
+        """Persist processed URLs and their timestamps."""
+        with open(PROCESSED_ARTICLES_FILE, 'w', encoding='utf-8') as f:
+            json.dump(processed_urls, f, indent=2)
     
     @staticmethod
     def load_failed_urls():

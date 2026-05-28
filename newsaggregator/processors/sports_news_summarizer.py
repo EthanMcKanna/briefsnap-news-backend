@@ -44,25 +44,21 @@ class SportsNewsSummarizer:
         try:
             search_term = self.sports_mapping.get(sport_code, sport_name)
             
-            prompt = f"""Please search for and summarize the latest news about {search_term} from the past 24 hours. 
+            prompt = f"""Search for the most important {search_term} news from the past 24 hours.
 
-Focus on:
-- Breaking news and major developments
-- Player trades, injuries, or signings
-- Game results and upcoming important matchups
-- League announcements or rule changes
-- Coaching changes or front office moves
+BriefSnap sports copy must be accurate, source-aware, and sharply edited. Rank
+stories by fan relevance, competitive impact, and confirmed sourcing. Ignore
+rumors, betting filler, low-stakes injury trackers, generic previews, and
+SEO roundup pages unless they contain a confirmed high-impact development.
 
-Provide a concise summary (2-3 sentences) of the most important developments, followed by 3-5 key bullet points of specific news items. Keep it informative but brief - total response should be under 200 words.
+Return under 150 words total:
+Summary: one polished 20-35 word sentence.
+Key News:
+• 3-4 bullets, 12-18 words each, each with one concrete fact.
 
-Format your response as:
-**Summary:** [2-3 sentence overview]
-
-**Key News:**
-• [Key story 1]
-• [Key story 2] 
-• [Key story 3]
-• [Additional stories if relevant]"""
+Use neutral wording. Do not mention Search, do not hedge with "reports say"
+unless the underlying claim is not official, and do not include markdown
+other than the two labels and bullets."""
 
             contents = [
                 types.Content(
@@ -109,7 +105,11 @@ Format your response as:
             print(f"Error generating summary for {sport_name}: {e}")
             return None
     
-    def generate_all_sports_summaries(self, sports_data: Dict[str, List[Dict]]) -> Dict[str, Dict]:
+    def generate_all_sports_summaries(
+        self,
+        sports_data: Dict[str, List[Dict]],
+        sport_codes: Optional[List[str]] = None,
+    ) -> Dict[str, Dict]:
         """Generate news summaries for all sports that have upcoming games.
         
         Args:
@@ -122,9 +122,8 @@ Format your response as:
         print("\n====== Generating Sports News Summaries ======")
 
         tasks = []
-        for sport_code, games in sports_data.items():
-            if not games:
-                continue
+        selected_codes = sport_codes or [sport_code for sport_code, games in sports_data.items() if games]
+        for sport_code in selected_codes:
             tasks.append((sport_code, self._get_sport_display_name(sport_code)))
 
         if not tasks:
