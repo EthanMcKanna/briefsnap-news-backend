@@ -183,6 +183,7 @@ SPORT_SCORE_LEAGUE_PRIORITY = {
     "NCAAF": 6,
     "NCAAB": 7,
 }
+POSTGAME_SCORE_TTL = timedelta(hours=10)
 
 ARTICLE_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -1642,7 +1643,7 @@ Sports score packet:
         if state == "in" and verified_dt:
             expires_at = (verified_dt + timedelta(minutes=15)).isoformat()
         elif (completed or state == "post") and event_date:
-            expires_at = (event_date + timedelta(hours=12)).isoformat()
+            expires_at = (event_date + POSTGAME_SCORE_TTL).isoformat()
         elif event_date:
             expires_at = (event_date + timedelta(minutes=30)).isoformat()
         else:

@@ -846,7 +846,7 @@ def test_final_score_cards_expire_after_postgame_window():
     assert score is not None
     assert score["is_live"] is False
     assert score["is_final"] is True
-    assert score["expires_at"] == "2026-05-12T12:30:00+00:00"
+    assert score["expires_at"] == "2026-05-12T10:30:00+00:00"
     assert datetime.fromisoformat(score["expires_at"]) > datetime.fromisoformat(score["event_date"])
 
 
