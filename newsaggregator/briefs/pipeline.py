@@ -893,6 +893,7 @@ Sports score packet:
         if not quick_hits:
             quick_hits = _trim_items([story["title"] for story in normalized_stories[:6]], max_items=6, max_words=14)
 
+        score_cards = self.sports_score_cards[:6]
         brief = {
             "id": self.today_id,
             "generated_at": now.isoformat(),
@@ -905,9 +906,10 @@ Sports score packet:
             "sections": sections,
             "custom_widgets": widgets,
             "stories": normalized_stories[:18],
-            "sports_scores": self.sports_score_cards[:6],
+            "sports_scores": score_cards,
             "source_count": len(articles),
         }
+        brief.update(self._sports_scores_metadata(score_cards))
         return brief
 
     def _fallback_brief(self, articles: list[ArticleCandidate], model_used: str) -> dict[str, Any]:
@@ -928,7 +930,8 @@ Sports score packet:
             }
             for article in top
         ]
-        return {
+        score_cards = self.sports_score_cards[:6]
+        brief = {
             "id": self.today_id,
             "generated_at": now.isoformat(),
             "model_used": model_used,
@@ -940,9 +943,11 @@ Sports score packet:
             "sections": self._normalize_sections([], stories, articles),
             "custom_widgets": self._normalize_widgets([], stories, articles),
             "stories": stories,
-            "sports_scores": self.sports_score_cards[:6],
+            "sports_scores": score_cards,
             "source_count": len(articles),
         }
+        brief.update(self._sports_scores_metadata(score_cards))
+        return brief
 
     def _normalize_sections(
         self,
@@ -1049,6 +1054,30 @@ Sports score packet:
             if image_url and ArticleFetcher._is_valid_image_url(image_url):
                 return image_url
         return None
+
+    @staticmethod
+    def _sports_scores_metadata(score_cards: list[dict[str, Any]]) -> dict[str, Any]:
+        if not score_cards:
+            return {}
+
+        verified_times: list[datetime] = []
+        for score in score_cards:
+            if not isinstance(score, dict):
+                continue
+            verified_at = str(score.get("verified_at") or "").strip()
+            if not verified_at:
+                continue
+            try:
+                verified_times.append(datetime.fromisoformat(verified_at.replace("Z", "+00:00")).astimezone(timezone.utc))
+            except ValueError:
+                continue
+
+        refreshed_at = max(verified_times) if verified_times else datetime.now(timezone.utc)
+        return {
+            "sports_scores_refreshed_at": refreshed_at.isoformat(),
+            "sports_scores_verified_at": refreshed_at.isoformat(),
+            "sports_scores_source": "ESPN",
+        }
 
     def _fetch_top_sports_scores(self) -> list[dict[str, Any]]:
         today = datetime.now(timezone.utc)
@@ -1426,6 +1455,13 @@ Sports score packet:
 
         if self.sports_score_cards and not brief.get("sports_scores"):
             issues.append("sports scores were fetched but omitted from the brief")
+        if brief.get("sports_scores"):
+            if brief.get("sports_scores_source") != "ESPN":
+                issues.append("sports scores missing top-level ESPN source metadata")
+            if not brief.get("sports_scores_refreshed_at"):
+                issues.append("sports scores missing top-level refreshed_at timestamp")
+            if not brief.get("sports_scores_verified_at"):
+                issues.append("sports scores missing top-level verified_at timestamp")
         for score in brief.get("sports_scores", []):
             if not isinstance(score, dict):
                 issues.append("sports score entry is not an object")
@@ -1691,6 +1727,12 @@ Sports score packet:
                     story["published_at"] = self._parse_iso(story["published_at"])
                 except Exception:
                     story["published_at"] = None
+        for timestamp_field in ("sports_scores_refreshed_at", "sports_scores_verified_at"):
+            if payload.get(timestamp_field):
+                try:
+                    payload[timestamp_field] = self._parse_iso(str(payload[timestamp_field]))
+                except Exception:
+                    payload.pop(timestamp_field, None)
 
         doc_id = payload["id"]
         db.collection("daily_briefs").document(doc_id).set(payload)
@@ -1725,11 +1767,15 @@ Sports score packet:
             }
 
         doc = latest_docs[0]
+        metadata = self._sports_scores_metadata(score_cards)
         update_payload = {
             "sports_scores": score_cards,
+            **metadata,
             "sports_scores_refreshed_at": refreshed_at,
             "sports_scores_source": "ESPN",
         }
+        if update_payload.get("sports_scores_verified_at"):
+            update_payload["sports_scores_verified_at"] = self._parse_iso(str(update_payload["sports_scores_verified_at"]))
         doc.reference.set(update_payload, merge=True)
         db.collection("daily_brief_history").document(doc.id).set(update_payload, merge=True)
 
@@ -1738,6 +1784,7 @@ Sports score packet:
             "doc_id": doc.id,
             "scores_count": len(score_cards),
             "refreshed_at": refreshed_at.isoformat(),
+            "verified_at": metadata.get("sports_scores_verified_at"),
         }
 
     def _refresh_custom_widget_requests(self, db: Any, brief: dict[str, Any]) -> None:

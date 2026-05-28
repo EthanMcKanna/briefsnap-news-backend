@@ -167,6 +167,21 @@ def test_parse_score_event_keeps_verification_metadata():
     assert score["venue_location"] == "Los Angeles, CA"
 
 
+def test_sports_score_metadata_uses_latest_card_verification():
+    metadata = DailyBriefPipeline._sports_scores_metadata(
+        [
+            {"verified_at": "2026-05-12T04:09:07+00:00"},
+            {"verified_at": "2026-05-12T04:10:12+00:00"},
+        ]
+    )
+
+    assert metadata == {
+        "sports_scores_refreshed_at": "2026-05-12T04:10:12+00:00",
+        "sports_scores_verified_at": "2026-05-12T04:10:12+00:00",
+        "sports_scores_source": "ESPN",
+    }
+
+
 def test_quality_gate_rejects_sports_scores_without_source_metadata():
     pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
     pipeline.sports_score_cards = [{"id": "nba-401871329", "league": "NBA"}]
@@ -255,6 +270,9 @@ def test_quality_gate_rejects_sports_scores_without_source_metadata():
 
     issues = pipeline._brief_quality_issues(brief)
 
+    assert "sports scores missing top-level ESPN source metadata" in issues
+    assert "sports scores missing top-level refreshed_at timestamp" in issues
+    assert "sports scores missing top-level verified_at timestamp" in issues
     assert "sports score nba-401871329 missing ESPN source metadata" in issues
     assert "sports score nba-401871329 missing verified_at" in issues
 
