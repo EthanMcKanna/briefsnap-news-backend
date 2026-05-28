@@ -988,6 +988,31 @@ def test_scrape_candidate_keeps_google_news_candidate_when_decode_fails():
     assert enriched.image_url is None
 
 
+def test_enrichment_keeps_thin_high_signal_sports_candidates():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False, fetch_workers=1))
+    sports_candidate = ArticleCandidate(
+        id="sports-thin",
+        topic="SPORTS",
+        title="MLB players demand salary overhaul before labor talks",
+        source="The Washington Post",
+        url="https://www.washingtonpost.com/business/2026/05/27/mlb-labor-negotiations/example",
+        description="",
+    )
+    thin_non_sports = ArticleCandidate(
+        id="business-thin",
+        topic="BUSINESS",
+        title="Company shares move before the closing bell",
+        source="MarketWatch",
+        url="https://www.marketwatch.com/story/example",
+        description="",
+    )
+
+    with patch.object(DailyBriefPipeline, "_scrape_candidate", lambda _self, candidate: candidate):
+        enriched = pipeline._enrich_articles([sports_candidate, thin_non_sports])
+
+    assert [candidate.id for candidate in enriched] == ["sports-thin"]
+
+
 def test_sports_story_filter_rejects_political_drift_without_word_substring_false_positive():
     assert not DailyBriefPipeline._is_high_signal_sports_candidate(
         title="Construction of cage-fighting arena transforms White House grounds",

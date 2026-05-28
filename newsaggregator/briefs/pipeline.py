@@ -644,10 +644,24 @@ class DailyBriefPipeline:
                 except Exception as exc:
                     print(f"[WARN] Extraction crashed for {candidate.title}: {exc}")
                     enriched_candidate = candidate
-                if enriched_candidate.content or enriched_candidate.description:
+                if (
+                    enriched_candidate.content
+                    or enriched_candidate.description
+                    or self._should_keep_thin_candidate(enriched_candidate)
+                ):
                     enriched.append(enriched_candidate)
 
         return enriched
+
+    def _should_keep_thin_candidate(self, candidate: ArticleCandidate) -> bool:
+        if self._normalize_topic(candidate.topic) != "SPORTS":
+            return False
+        return self._is_high_signal_sports_candidate(
+            title=candidate.title,
+            source=candidate.source,
+            url=candidate.url,
+            description=candidate.description or candidate.content[:400],
+        )
 
     def _scrape_candidate(self, candidate: ArticleCandidate) -> ArticleCandidate:
         if "news.google.com" in candidate.url:
