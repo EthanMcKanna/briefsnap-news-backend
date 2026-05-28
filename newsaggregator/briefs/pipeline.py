@@ -884,58 +884,21 @@ Sports score packet:
             if not source_article or source_article.id in story_ids:
                 continue
             story_ids.add(source_article.id)
-            image_url = self._story_image_url(source_article.image_url)
-            source = _clean_text(story.get("source") or source_article.source)
-            title = self._clean_title(story.get("title") or source_article.title, source=source)
-            summary = self._clean_description(story.get("summary") or "", title=title, source=source)
-            if not summary:
-                summary = self._clean_description(source_article.description or "", title=title, source=source)
-            if not summary:
-                summary = _clean_text(source_article.content[:260]) or title
-            normalized_stories.append(
-                {
-                    "id": source_article.id,
-                    "topic": story.get("topic") or source_article.topic,
-                    "title": _trim_words(title, 18),
-                    "source": source,
-                    "url": source_article.url,
-                    "summary": _trim_words(summary, 22),
-                    "why_it_matters": _trim_words(story.get("why_it_matters") or "", 18),
-                    "urgency": _clean_text(story.get("urgency") or "medium").lower() or "medium",
-                    "published_at": source_article.published_at,
-                    "image_url": image_url,
-                }
-            )
+            normalized_stories.append(self._normalized_story_from_article(source_article, story=story))
 
         if len(normalized_stories) < 6:
             for article in articles:
                 if article.id in story_ids:
                     continue
                 story_ids.add(article.id)
-                image_url = self._story_image_url(article.image_url)
-                title = self._clean_title(article.title, source=article.source)
-                summary = self._clean_description(article.description or "", title=title, source=article.source)
-                if not summary:
-                    summary = _clean_text(article.content[:260]) or title
-                normalized_stories.append(
-                    {
-                        "id": article.id,
-                        "topic": article.topic,
-                        "title": _trim_words(title, 18),
-                        "source": _clean_text(article.source),
-                        "url": article.url,
-                        "summary": _trim_words(summary, 22),
-                        "why_it_matters": "High source weight and current relevance put it in the lead scan.",
-                        "urgency": "medium",
-                        "published_at": article.published_at,
-                        "image_url": image_url,
-                    }
-                )
+                normalized_stories.append(self._normalized_story_from_article(article))
                 if len(normalized_stories) >= 12:
                     break
 
         if len(normalized_stories) < 6:
             return self._fallback_brief(articles, model_used=model_used)
+
+        self._ensure_sports_news_stories(normalized_stories, articles, story_ids)
 
         now = datetime.now(timezone.utc)
         sections = self._normalize_sections(payload.get("sections", []), normalized_stories, articles)
@@ -964,29 +927,87 @@ Sports score packet:
         brief.update(self._sports_scores_metadata(score_cards))
         return brief
 
+    def _normalized_story_from_article(
+        self,
+        article: ArticleCandidate,
+        *,
+        story: dict[str, Any] | None = None,
+        why_it_matters: str = "High source weight and current relevance put it in the lead scan.",
+    ) -> dict[str, Any]:
+        story = story or {}
+        source = _clean_text(story.get("source") or article.source)
+        title = self._clean_title(story.get("title") or article.title, source=source)
+        summary = self._clean_description(story.get("summary") or "", title=title, source=source)
+        if not summary:
+            summary = self._clean_description(article.description or "", title=title, source=source)
+        if not summary:
+            summary = _clean_text(article.content[:260]) or title
+
+        return {
+            "id": article.id,
+            "topic": story.get("topic") or article.topic,
+            "title": _trim_words(title, 18),
+            "source": source,
+            "url": article.url,
+            "summary": _trim_words(summary, 22),
+            "why_it_matters": _trim_words(story.get("why_it_matters") or why_it_matters, 18),
+            "urgency": _clean_text(story.get("urgency") or "medium").lower() or "medium",
+            "published_at": article.published_at,
+            "image_url": self._story_image_url(article.image_url),
+        }
+
+    def _ensure_sports_news_stories(
+        self,
+        stories: list[dict[str, Any]],
+        articles: list[ArticleCandidate],
+        story_ids: set[str],
+        *,
+        minimum: int = 2,
+    ) -> None:
+        existing = [
+            story
+            for story in stories
+            if self._normalize_topic(story.get("topic")) == "SPORTS"
+            and self._is_high_signal_sports_candidate(
+                title=str(story.get("title") or ""),
+                source=str(story.get("source") or ""),
+                url=str(story.get("url") or ""),
+                description=" ".join(str(story.get(key) or "") for key in ("summary", "why_it_matters")),
+            )
+        ]
+        if len(existing) >= minimum:
+            return
+
+        for article in articles:
+            if len(existing) >= minimum:
+                break
+            if article.id in story_ids or self._normalize_topic(article.topic) != "SPORTS":
+                continue
+            if not self._is_high_signal_sports_candidate(
+                title=article.title,
+                source=article.source,
+                url=article.url,
+                description=article.description or article.content[:400],
+            ):
+                continue
+
+            story_ids.add(article.id)
+            story = self._normalized_story_from_article(
+                article,
+                why_it_matters="A high-signal sports source adds context beyond the scoreboard.",
+            )
+            stories.append(story)
+            existing.append(story)
+
     def _fallback_brief(self, articles: list[ArticleCandidate], model_used: str) -> dict[str, Any]:
         now = datetime.now(timezone.utc)
         top = articles[:12]
         stories = []
+        story_ids: set[str] = set()
         for article in top:
-            title = self._clean_title(article.title, source=article.source)
-            summary = self._clean_description(article.description or "", title=title, source=article.source)
-            if not summary:
-                summary = _clean_text(article.content[:260]) or title
-            stories.append(
-                {
-                    "id": article.id,
-                    "topic": article.topic,
-                    "title": _trim_words(title, 18),
-                    "source": _clean_text(article.source),
-                    "url": article.url,
-                    "summary": _trim_words(summary, 22),
-                    "why_it_matters": "High source weight and current relevance put it in the lead scan.",
-                    "urgency": "medium",
-                    "published_at": article.published_at,
-                    "image_url": self._story_image_url(article.image_url),
-                }
-            )
+            story_ids.add(article.id)
+            stories.append(self._normalized_story_from_article(article))
+        self._ensure_sports_news_stories(stories, articles, story_ids)
         score_cards = self.sports_score_cards[:6]
         headline, dek, summary, quick_hits = self._grounded_top_level_copy(payload={}, stories=stories)
         brief = {
@@ -1688,6 +1709,9 @@ Sports score packet:
         section_topics = [self._normalize_topic(section.get("topic")) for section in sections]
         if "TOP_NEWS" not in section_topics:
             issues.append("missing TOP_NEWS section")
+        sports_story_ids = self._sports_story_ids(stories, limit=4)
+        if brief.get("sports_scores") and not sports_story_ids:
+            issues.append("sports desk needs at least one sports news story")
 
         for section in sections:
             topic = self._normalize_topic(section.get("topic"))

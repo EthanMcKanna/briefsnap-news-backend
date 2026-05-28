@@ -322,6 +322,108 @@ def test_quality_gate_accepts_direct_sources_with_multimedia_and_sports_relevanc
     assert issues == []
 
 
+def test_normalize_brief_backfills_sports_news_when_model_omits_it():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    score = DailyBriefPipeline._parse_score_event(
+        league="NBA",
+        event=SAMPLE_SCORE_EVENT,
+        source_url="https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=20260511&limit=80",
+        verified_at="2026-05-12T04:09:07+00:00",
+    )
+    assert score is not None
+    pipeline.sports_score_cards = [score]
+    articles = article_candidates_for_normalization() + [
+        ArticleCandidate(
+            id="sports-1",
+            topic="SPORTS",
+            title="NBA playoff injury report reshapes the finals race",
+            source="ESPN",
+            url="https://www.espn.com/nba/story/_/id/sports-1/nba-playoff-injury-report",
+            description="A late NBA injury update changed rotations and betting expectations before tonight's playoff game.",
+            image_url="https://a.espncdn.com/photo/2026/0512/nba-playoffs.jpg",
+            score=22,
+        ),
+        ArticleCandidate(
+            id="sports-2",
+            topic="SPORTS",
+            title="MLB players push salary overhaul before labor talks",
+            source="The Athletic",
+            url="https://www.nytimes.com/athletic/7312470/2026/05/27/mlb-labor-negotiations/",
+            description="MLB players are pressing for changes to the salary system before the next bargaining round.",
+            score=21,
+        ),
+    ]
+    payload = {
+        "headline": "Court ruling and markets lead the day",
+        "summary": "A concise current summary.",
+        "quick_hits": ["Court ruling reshapes federal immigration enforcement"],
+        "stories": [
+            {
+                "id": article.id,
+                "topic": article.topic,
+                "title": article.title,
+                "source": article.source,
+                "summary": article.description,
+                "why_it_matters": "Readers get a concrete current consequence.",
+            }
+            for article in articles[:6]
+        ],
+        "sections": [
+            {
+                "topic": "TOP_NEWS",
+                "title": "Top News",
+                "summary": "The top items.",
+                "why_it_matters": "They matter.",
+                "story_ids": ["story-1", "story-2"],
+            }
+        ],
+        "custom_widgets": [],
+    }
+
+    brief = pipeline._normalize_brief(payload, articles, "gemini-3-flash-preview-search-grounded")
+    sports_stories = [
+        story for story in brief["stories"]
+        if pipeline._normalize_topic(story.get("topic")) == "SPORTS"
+    ]
+    sports_sections = [
+        section for section in brief["sections"]
+        if pipeline._normalize_topic(section.get("topic")) == "SPORTS"
+    ]
+
+    assert [story["id"] for story in sports_stories] == ["sports-1", "sports-2"]
+    assert sports_sections
+    assert set(sports_sections[0]["story_ids"]) == {"sports-1", "sports-2"}
+    assert "sports desk needs at least one sports news story" not in pipeline._brief_quality_issues(brief)
+
+
+def test_quality_gate_rejects_scores_without_sports_news_story():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    score = DailyBriefPipeline._parse_score_event(
+        league="NBA",
+        event=SAMPLE_SCORE_EVENT,
+        source_url="https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=20260511&limit=80",
+        verified_at="2026-05-12T04:09:07+00:00",
+    )
+    assert score is not None
+    brief = valid_quality_brief()
+    brief["stories"][-1].update(
+        {
+            "topic": "HEALTH",
+            "title": "Hospitals prepare for summer virus uptick",
+            "summary": "Hospitals are preparing capacity plans as summer respiratory virus cases begin to rise.",
+            "why_it_matters": "Planning can reduce delays for patients.",
+            "source": "STAT",
+            "url": "https://www.statnews.com/story-6",
+        }
+    )
+    brief["sports_scores"] = [score]
+    brief.update(DailyBriefPipeline._sports_scores_metadata([score]))
+
+    issues = pipeline._brief_quality_issues(brief)
+
+    assert "sports desk needs at least one sports news story" in issues
+
+
 def test_normalize_brief_repairs_unsupported_top_level_copy():
     pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
     articles = article_candidates_for_normalization()
