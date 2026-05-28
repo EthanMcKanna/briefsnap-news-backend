@@ -456,6 +456,64 @@ def test_normalize_brief_keeps_canonical_sports_topic_when_model_mislabels_story
     assert sports_story_ids == ["sports-1", "sports-2"]
 
 
+def test_normalize_brief_keeps_backfilled_sports_inside_visible_story_window():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    articles = [
+        ArticleCandidate(
+            id=f"story-{index}",
+            topic="BUSINESS" if index % 2 else "TECHNOLOGY",
+            title=f"Non sports story {index} with enough detail",
+            source="CNBC" if index % 2 else "The Verge",
+            url=f"https://example.com/story-{index}",
+            description=f"Non sports source packet summary {index} with enough detail for readers.",
+            score=40 - index,
+        )
+        for index in range(1, 19)
+    ] + [
+        ArticleCandidate(
+            id="sports-1",
+            topic="SPORTS",
+            title="NBA playoff injury report reshapes the finals race",
+            source="ESPN",
+            url="https://www.espn.com/nba/story/_/id/sports-1/nba-playoff-injury-report",
+            description="A late NBA injury update changed rotations before tonight's playoff game.",
+            score=5,
+        ),
+        ArticleCandidate(
+            id="sports-2",
+            topic="SPORTS",
+            title="MLB players demand salary overhaul before labor talks",
+            source="The Washington Post",
+            url="https://www.washingtonpost.com/business/2026/05/27/mlb-labor-negotiations/example",
+            description="",
+            score=4,
+        ),
+    ]
+    payload = {
+        "headline": "Non sports story 1 leads the day",
+        "summary": "A concise current summary.",
+        "quick_hits": ["Non sports story 1 with enough detail"],
+        "stories": [
+            {
+                "id": article.id,
+                "topic": article.topic,
+                "title": article.title,
+                "source": article.source,
+                "summary": article.description,
+                "why_it_matters": "Readers get a concrete current consequence.",
+            }
+            for article in articles[:18]
+        ],
+        "sections": [],
+        "custom_widgets": [],
+    }
+
+    brief = pipeline._normalize_brief(payload, articles, "gemini-3-flash-preview-search-grounded")
+    visible_story_ids = {story["id"] for story in brief["stories"]}
+
+    assert {"sports-1", "sports-2"}.issubset(visible_story_ids)
+
+
 def test_quality_gate_rejects_scores_without_sports_news_story():
     pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
     score = DailyBriefPipeline._parse_score_event(

@@ -981,10 +981,12 @@ Sports score packet:
         story_ids: set[str],
         *,
         minimum: int = 2,
+        max_visible: int = 18,
     ) -> None:
+        visible_stories = stories[:max_visible]
         existing = [
             story
-            for story in stories
+            for story in visible_stories
             if self._normalize_topic(story.get("topic")) == "SPORTS"
             and self._is_high_signal_sports_candidate(
                 title=str(story.get("title") or ""),
@@ -995,6 +997,27 @@ Sports score packet:
         ]
         if len(existing) >= minimum:
             return
+
+        for index, story in enumerate(stories[max_visible:], start=max_visible):
+            if len(existing) >= minimum:
+                break
+            if self._normalize_topic(story.get("topic")) != "SPORTS":
+                continue
+            if not self._is_high_signal_sports_candidate(
+                title=str(story.get("title") or ""),
+                source=str(story.get("source") or ""),
+                url=str(story.get("url") or ""),
+                description=" ".join(str(story.get(key) or "") for key in ("summary", "why_it_matters")),
+            ):
+                continue
+            replacement_index = self._replacement_index_for_story_topic_minimum(
+                stories[:max_visible],
+                protected_topic="SPORTS",
+            )
+            if replacement_index is None:
+                break
+            stories[replacement_index], stories[index] = stories[index], stories[replacement_index]
+            existing.append(stories[replacement_index])
 
         for article in articles:
             if len(existing) >= minimum:
@@ -1014,8 +1037,33 @@ Sports score packet:
                 article,
                 why_it_matters="A high-signal sports source adds context beyond the scoreboard.",
             )
-            stories.append(story)
+            if len(stories) < max_visible:
+                stories.append(story)
+            else:
+                replacement_index = self._replacement_index_for_story_topic_minimum(
+                    stories[:max_visible],
+                    protected_topic="SPORTS",
+                )
+                if replacement_index is None:
+                    break
+                stories[replacement_index] = story
             existing.append(story)
+
+    @staticmethod
+    def _replacement_index_for_story_topic_minimum(
+        stories: list[dict[str, Any]],
+        *,
+        protected_topic: str,
+    ) -> int | None:
+        normalized_protected = DailyBriefPipeline._normalize_topic(protected_topic)
+        for index in range(len(stories) - 1, -1, -1):
+            topic = DailyBriefPipeline._normalize_topic(stories[index].get("topic"))
+            if topic not in {normalized_protected, "TOP_NEWS"}:
+                return index
+        for index in range(len(stories) - 1, -1, -1):
+            if DailyBriefPipeline._normalize_topic(stories[index].get("topic")) != normalized_protected:
+                return index
+        return None
 
     def _fallback_brief(self, articles: list[ArticleCandidate], model_used: str) -> dict[str, Any]:
         now = datetime.now(timezone.utc)
