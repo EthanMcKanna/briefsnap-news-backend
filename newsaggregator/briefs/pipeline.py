@@ -1287,10 +1287,11 @@ Sports score packet:
 
     @staticmethod
     def _hero_image_url(stories: list[dict[str, Any]]) -> str | None:
-        for story in stories:
-            image_url = str(story.get("image_url") or "").strip()
-            if image_url and ArticleFetcher._is_valid_image_url(image_url):
-                return image_url
+        if not stories:
+            return None
+        image_url = str(stories[0].get("image_url") or "").strip()
+        if image_url and ArticleFetcher._is_valid_image_url(image_url):
+            return image_url
         return None
 
     @staticmethod
@@ -1630,10 +1631,13 @@ Sports score packet:
             issues.append("leading stories need at least three distinct source domains")
 
         hero_image_url = str(brief.get("hero_image_url") or "").strip()
-        if stories and not hero_image_url:
-            issues.append("missing hero_image_url")
+        lead_image_url = str(stories[0].get("image_url") or "").strip() if stories else ""
+        if lead_image_url and not hero_image_url:
+            issues.append("lead story has art but hero_image_url is missing")
         elif hero_image_url and not ArticleFetcher._is_valid_image_url(hero_image_url):
             issues.append("hero_image_url is not suitable for story art")
+        elif hero_image_url and hero_image_url != lead_image_url:
+            issues.append("hero_image_url must come from the lead story")
         if len(stories) >= 6 and story_image_count < 2:
             issues.append("leading stories need at least two image_url values")
 

@@ -433,8 +433,17 @@ def test_quality_gate_rejects_google_wrappers_and_sparse_multimedia():
     issues = pipeline._brief_quality_issues(brief)
 
     assert "story story-1 still uses Google News wrapper URL" in issues
-    assert "missing hero_image_url" in issues
     assert "leading stories need at least two image_url values" in issues
+
+
+def test_quality_gate_rejects_hero_art_from_non_lead_story():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    brief = valid_quality_brief()
+    brief["hero_image_url"] = brief["stories"][1]["image_url"]
+
+    issues = pipeline._brief_quality_issues(brief)
+
+    assert "hero_image_url must come from the lead story" in issues
 
 
 def test_quality_gate_rejects_badge_and_tiny_thumbnail_images():
@@ -507,7 +516,7 @@ def test_normalize_brief_strips_bad_story_art_before_quality_gate():
     issues = pipeline._brief_quality_issues(brief)
 
     assert brief["stories"][0]["image_url"] is None
-    assert brief["hero_image_url"] == "https://images.axios.com/example/1366x768/2026/05/27/story.jpeg"
+    assert brief["hero_image_url"] is None
     assert not any("image_url is not suitable" in issue for issue in issues)
 
 
