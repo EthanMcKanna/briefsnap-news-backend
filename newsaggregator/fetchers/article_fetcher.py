@@ -293,7 +293,7 @@ class ArticleFetcher:
             'masthead', 'navbar', 'footer', 'badge', 'app-store',
             'appstore', 'google-play', 'play-store',
             'download-on-the-app-store', 'newsletter', 'sign-up',
-            'signup', 'generic-newsletter',
+            'signup', 'generic-newsletter', 'wordmark', 'headshot',
         ]
         
         # Check if any logo pattern is in the URL
@@ -379,6 +379,8 @@ class ArticleFetcher:
         image_cdn_hosts = (
             "cloudfront.net",
             "ctfassets.net",
+            "brightspotcdn.com",
+            "dims.apnews.com",
             "images.unsplash.com",
             "imgix.net",
             "akamaized.net",
@@ -435,6 +437,16 @@ class ArticleFetcher:
         width_match = re.search(r'(?:width|w)=([0-9]{3,4})', url_lower)
         if width_match and int(width_match.group(1)) >= 800:
             score += 2
+        resize_match = re.search(r'/resize/([0-9]{2,4})(?:x([0-9]{2,4}))?', url_lower)
+        if resize_match:
+            width = int(resize_match.group(1))
+            height = int(resize_match.group(2) or 0)
+            if width >= 900:
+                score += 4
+            elif width >= 600:
+                score += 2
+            elif width <= 320 and (not height or height <= 320):
+                score -= 5
 
         # Penalize URLs from known tracking hosts
         tracking_hosts = ['doubleclick.net', 'googlesyndication.com']

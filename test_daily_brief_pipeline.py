@@ -1071,6 +1071,11 @@ def test_image_url_filter_accepts_validated_cdn_image_shapes():
     assert ArticleFetcher._is_valid_image_url(
         "https://images.ctfassets.net/site/asset-id/briefsnap-news-image"
     )
+    assert ArticleFetcher._is_valid_image_url(
+        "https://dims.apnews.com/dims4/default/ab25a62/2147483647/strip/true/"
+        "crop/1189x792+6+0/resize/980x653!/quality/90/?url=https%3A%2F%2Fassets.apnews.com"
+        "%2F0d%2Ff2%2Fff2f23bdb777c03a9debb384aee8%2F3f54babfbdf04c7f803715488dd5228e"
+    )
     assert not ArticleFetcher._is_valid_image_url(
         "https://example.com/assets/logo.svg"
     )
