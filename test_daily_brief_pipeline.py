@@ -1,6 +1,6 @@
 """Focused tests for the daily brief contract consumed by the iOS app."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from newsaggregator.briefs.pipeline import ArticleCandidate, DailyBriefPipeline, PipelineOptions
@@ -942,6 +942,71 @@ def test_quality_gate_rejects_sports_story_drift():
     assert "sports story story-6 failed sports relevance gate" in issues
 
 
+def test_coverage_report_counts_sources_topics_and_images():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    articles = article_candidates_for_normalization()
+    stories = [
+        pipeline._normalized_story_from_article(article)
+        for article in articles
+    ]
+    sections = pipeline._normalize_sections([], stories, articles)
+
+    report = pipeline._coverage_report(
+        stories=stories,
+        articles=articles,
+        sections=sections,
+        now=datetime(2026, 5, 12, tzinfo=timezone.utc),
+    )
+
+    assert report["source_packet_count"] == 6
+    assert report["source_packet_domains"] == 6
+    assert report["leading_trusted_story_count"] >= 5
+    assert report["story_image_count"] == 2
+    assert report["story_topic_counts"]["TOP_NEWS"] == 2
+    assert "TOP_NEWS" in report["section_topics"]
+
+
+def test_quality_gate_rejects_single_source_overconcentration():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    brief = valid_quality_brief()
+    for index, story in enumerate(brief["stories"][:3], start=1):
+        story["source"] = "Reuters"
+        story["url"] = f"https://www.reuters.com/world/us/repeated-{index}"
+
+    issues = pipeline._brief_quality_issues(brief)
+
+    assert "leading stories overrepresent a single source domain: reuters.com" in issues
+
+
+def test_quality_gate_rejects_stale_leading_story_cluster():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    brief = valid_quality_brief()
+    old_timestamp = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
+    for story in brief["stories"][:4]:
+        story["published_at"] = old_timestamp
+
+    issues = pipeline._brief_quality_issues(brief)
+
+    assert "too many leading stories are stale" in issues
+
+
+def test_normalized_story_default_why_it_matters_is_not_generic_filler():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    story = pipeline._normalized_story_from_article(
+        ArticleCandidate(
+            id="tech-1",
+            topic="TECHNOLOGY",
+            title="Chipmaker expands domestic AI server production",
+            source="The Verge",
+            url="https://www.theverge.com/story-4",
+            description="The company said it will build new production lines in Texas.",
+        )
+    )
+
+    assert story["why_it_matters"] == "It can shift products, policy, or platform decisions"
+    assert "High source weight" not in story["why_it_matters"]
+
+
 def test_final_score_cards_expire_after_postgame_window():
     final_event = {
         **SAMPLE_SCORE_EVENT,
@@ -1316,6 +1381,48 @@ def test_diversification_keeps_high_signal_sports_in_source_packet():
 
     assert {"sports-1", "sports-2"}.issubset({article.id for article in selected})
     assert sum(1 for article in selected if article.topic == "TOP_NEWS") >= 2
+
+
+def test_diversification_reserves_room_for_core_coverage_topics():
+    articles: list[ArticleCandidate] = []
+    for topic, count, base_score in [
+        ("TOP_NEWS", 18, 100),
+        ("BUSINESS", 3, 55),
+        ("TECHNOLOGY", 3, 50),
+        ("WORLD", 3, 45),
+        ("HEALTH", 2, 40),
+        ("SCIENCE", 2, 35),
+        ("SPORTS", 2, 30),
+    ]:
+        for index in range(count):
+            title = f"{topic.title()} coverage story {index}"
+            if topic == "SPORTS":
+                title = f"NBA playoff coverage story {index}"
+            articles.append(
+                ArticleCandidate(
+                    id=f"{topic.lower()}-{index}",
+                    topic=topic,
+                    title=title,
+                    source="Associated Press" if topic != "SPORTS" else "ESPN",
+                    url=f"https://source-{topic.lower()}-{index}.example.com/story",
+                    description="A current source-backed update with enough detail for the brief.",
+                    score=base_score - index,
+                )
+            )
+
+    selected = DailyBriefPipeline._diversify_articles(articles, limit=24)
+    counts = {
+        topic: sum(1 for article in selected if article.topic == topic)
+        for topic in {article.topic for article in selected}
+    }
+
+    assert counts["TOP_NEWS"] >= 6
+    assert counts["BUSINESS"] >= 3
+    assert counts["TECHNOLOGY"] >= 3
+    assert counts["WORLD"] >= 3
+    assert counts["HEALTH"] >= 2
+    assert counts["SCIENCE"] >= 2
+    assert counts["SPORTS"] >= 2
 
 
 def test_sports_story_filter_rejects_political_drift_without_word_substring_false_positive():

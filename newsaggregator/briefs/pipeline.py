@@ -15,6 +15,7 @@ import json
 import os
 import re
 import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -162,6 +163,19 @@ TOP_LEVEL_COPY_ENTITY_STOPWORDS: set[str] = {
 }
 
 MAX_ARTICLES_PER_DOMAIN = int(os.environ.get("BRIEFSNAP_MAX_ARTICLES_PER_DOMAIN", "3"))
+MAX_LEADING_STORIES_PER_DOMAIN = int(os.environ.get("BRIEFSNAP_MAX_LEADING_STORIES_PER_DOMAIN", "2"))
+MIN_LEADING_TRUSTED_STORIES = int(os.environ.get("BRIEFSNAP_MIN_LEADING_TRUSTED_STORIES", "4"))
+MIN_VISIBLE_STORY_TOPICS = int(os.environ.get("BRIEFSNAP_MIN_VISIBLE_STORY_TOPICS", "4"))
+MAX_STALE_LEADING_STORY_HOURS = int(os.environ.get("BRIEFSNAP_MAX_STALE_LEADING_STORY_HOURS", "72"))
+SOURCE_PACKET_TOPIC_MINIMUMS: dict[str, int] = {
+    "TOP_NEWS": 6,
+    "WORLD": 3,
+    "BUSINESS": 3,
+    "TECHNOLOGY": 3,
+    "HEALTH": 2,
+    "SCIENCE": 2,
+    "SPORTS": 2,
+}
 
 SPORT_SCORE_ENDPOINTS: tuple[tuple[str, str], ...] = (
     ("NFL", "football/nfl"),
@@ -282,6 +296,9 @@ CUSTOM_WIDGET_SCHEMA: dict[str, Any] = {
 EDITORIAL_FILLER_PHRASES: tuple[str, ...] = (
     "selected as one of the strongest current stories in the source packet",
     "a compact view of current developments in this category",
+    "high source weight and current relevance put it in the lead scan",
+    "enough current signal to merit a dedicated scan",
+    "latest selected updates",
     "significant developments",
     "continues to unfold",
     "it remains to be seen",
@@ -1071,6 +1088,11 @@ Sports score packet:
             "stories": normalized_stories[:18],
             "sports_scores": score_cards,
             "source_count": len(articles),
+            "coverage_report": self._coverage_report(
+                stories=normalized_stories[:18],
+                articles=articles,
+                sections=sections,
+            ),
         }
         brief.update(self._sports_scores_metadata(score_cards))
         return brief
@@ -1080,7 +1102,7 @@ Sports score packet:
         article: ArticleCandidate,
         *,
         story: dict[str, Any] | None = None,
-        why_it_matters: str = "High source weight and current relevance put it in the lead scan.",
+        why_it_matters: str | None = None,
     ) -> dict[str, Any]:
         story = story or {}
         source = _clean_text(story.get("source") or article.source)
@@ -1102,11 +1124,35 @@ Sports score packet:
             "source": source,
             "url": article.url,
             "summary": _trim_words(summary, 22),
-            "why_it_matters": _trim_words(story.get("why_it_matters") or why_it_matters, 18),
+            "why_it_matters": _trim_words(
+                story.get("why_it_matters") or why_it_matters or self._default_why_it_matters(article),
+                18,
+            ),
             "urgency": _clean_text(story.get("urgency") or "medium").lower() or "medium",
             "published_at": article.published_at,
             "image_url": self._story_image_url(article.image_url),
         }
+
+    @classmethod
+    def _default_why_it_matters(cls, article: ArticleCandidate) -> str:
+        topic = cls._normalize_topic(article.topic)
+        if topic == "TOP_NEWS":
+            return "It is one of today's clearest public-impact updates."
+        if topic == "BUSINESS":
+            return "It can affect markets, companies, or household costs."
+        if topic == "TECHNOLOGY":
+            return "It can shift products, policy, or platform decisions."
+        if topic == "WORLD":
+            return "It adds context for global risk and diplomacy."
+        if topic == "HEALTH":
+            return "It can affect public health guidance or care decisions."
+        if topic == "SCIENCE":
+            return "It changes the evidence base for an important field."
+        if topic == "SPORTS":
+            return "It gives fans verified context beyond the scoreboard."
+        if topic == "ENTERTAINMENT":
+            return "It changes the culture and media conversation."
+        return "It gives readers useful context for the day."
 
     def _ensure_sports_news_stories(
         self,
@@ -1210,6 +1256,7 @@ Sports score packet:
         self._ensure_sports_news_stories(stories, articles, story_ids)
         score_cards = self.sports_score_cards[:6]
         headline, dek, summary, quick_hits = self._grounded_top_level_copy(payload={}, stories=stories)
+        sections = self._normalize_sections([], stories, articles)
         brief = {
             "id": self.today_id,
             "generated_at": now.isoformat(),
@@ -1219,11 +1266,16 @@ Sports score packet:
             "summary": summary,
             "quick_hits": quick_hits,
             "hero_image_url": self._hero_image_url(stories),
-            "sections": self._normalize_sections([], stories, articles),
+            "sections": sections,
             "custom_widgets": self._normalize_widgets([], stories, articles),
             "stories": stories,
             "sports_scores": score_cards,
             "source_count": len(articles),
+            "coverage_report": self._coverage_report(
+                stories=stories,
+                articles=articles,
+                sections=sections,
+            ),
         }
         brief.update(self._sports_scores_metadata(score_cards))
         return brief
@@ -1578,6 +1630,74 @@ Sports score packet:
             "sports_scores_source": "ESPN",
         }
 
+    @classmethod
+    def _coverage_report(
+        cls,
+        *,
+        stories: list[dict[str, Any]],
+        articles: list[ArticleCandidate] | None = None,
+        sections: list[dict[str, Any]] | None = None,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        articles = articles or []
+        sections = sections or []
+        now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+
+        article_domains = [cls._domain_name(article.url) for article in articles if article.url]
+        story_domains = [
+            cls._domain_name(str(story.get("url") or ""))
+            for story in stories
+            if story.get("url")
+        ]
+        leading_stories = stories[: min(8, len(stories))]
+        leading_domains = [
+            cls._domain_name(str(story.get("url") or ""))
+            for story in leading_stories
+            if story.get("url")
+        ]
+        topic_counts = Counter(cls._normalize_topic(article.topic) for article in articles if article.topic)
+        story_topic_counts = Counter(cls._normalize_topic(story.get("topic")) for story in stories if story.get("topic"))
+        leading_domain_counts = Counter(domain for domain in leading_domains if domain)
+        leading_ages = [
+            age
+            for age in (cls._story_age_hours(story, now=now) for story in leading_stories)
+            if age is not None
+        ]
+
+        return {
+            "source_packet_count": len(articles),
+            "source_packet_domains": len(set(article_domains)),
+            "trusted_source_packet_count": sum(
+                1 for article in articles if cls._is_trusted_domain(cls._domain_name(article.url))
+            ),
+            "story_count": len(stories),
+            "story_domains": len(set(story_domains)),
+            "leading_story_domains": len(set(leading_domains)),
+            "leading_trusted_story_count": sum(
+                1
+                for story in leading_stories
+                if cls._is_trusted_domain(cls._domain_name(str(story.get("url") or "")))
+            ),
+            "max_leading_domain_count": max(leading_domain_counts.values(), default=0),
+            "story_image_count": sum(
+                1
+                for story in stories
+                if ArticleFetcher._is_valid_image_url(str(story.get("image_url") or ""))
+            ),
+            "sports_story_count": story_topic_counts.get("SPORTS", 0),
+            "topic_counts": dict(sorted(topic_counts.items())),
+            "story_topic_counts": dict(sorted(story_topic_counts.items())),
+            "section_topics": [
+                cls._normalize_topic(section.get("topic"))
+                for section in sections
+                if section.get("topic")
+            ],
+            "dated_leading_story_count": len(leading_ages),
+            "stale_leading_story_count": sum(
+                1 for age in leading_ages if age > MAX_STALE_LEADING_STORY_HOURS
+            ),
+        }
+
     def _fetch_top_sports_scores(self) -> list[dict[str, Any]]:
         today = datetime.now(timezone.utc)
         verified_at = today.isoformat()
@@ -1893,6 +2013,55 @@ Sports score packet:
             issues.append("leading stories need at least four distinct source domains")
         elif len(stories) >= 6 and leading_domain_count < 3:
             issues.append("leading stories need at least three distinct source domains")
+
+        leading_stories = stories[: min(8, len(stories))]
+        leading_domains = [
+            self._domain_name(str(story.get("url") or ""))
+            for story in leading_stories
+            if story.get("url")
+        ]
+        leading_domain_counts = Counter(leading_domains)
+        overrepresented_domains = [
+            domain
+            for domain, count in leading_domain_counts.items()
+            if domain and count > MAX_LEADING_STORIES_PER_DOMAIN
+        ]
+        if overrepresented_domains:
+            issues.append(
+                "leading stories overrepresent a single source domain: "
+                + ", ".join(sorted(overrepresented_domains))
+            )
+
+        trusted_leading_count = sum(
+            1
+            for story in leading_stories
+            if self._is_trusted_domain(self._domain_name(str(story.get("url") or "")))
+        )
+        if len(stories) >= 6 and trusted_leading_count < min(MIN_LEADING_TRUSTED_STORIES, len(leading_stories)):
+            issues.append("leading stories need more trusted primary or established sources")
+
+        visible_topics = {
+            self._normalize_topic(story.get("topic"))
+            for story in stories[: min(12, len(stories))]
+            if story.get("topic")
+        }
+        visible_topics.discard("")
+        if len(stories) >= 8 and len(visible_topics) < MIN_VISIBLE_STORY_TOPICS:
+            issues.append("visible stories need broader topic coverage")
+        if stories[:3] and not any(
+            self._normalize_topic(story.get("topic")) == "TOP_NEWS"
+            for story in stories[:3]
+        ):
+            issues.append("one of the first three stories must be TOP_NEWS")
+
+        leading_ages = [
+            age
+            for age in (self._story_age_hours(story) for story in leading_stories)
+            if age is not None
+        ]
+        stale_leading_count = sum(1 for age in leading_ages if age > MAX_STALE_LEADING_STORY_HOURS)
+        if len(leading_ages) >= 3 and stale_leading_count >= max(3, len(leading_ages) // 2):
+            issues.append("too many leading stories are stale")
 
         hero_image_url = str(brief.get("hero_image_url") or "").strip()
         lead_image_url = str(stories[0].get("image_url") or "").strip() if stories else ""
@@ -2668,6 +2837,28 @@ Generated at: {generated_at}
         return host.split(":")[0]
 
     @staticmethod
+    def _is_trusted_domain(domain: str) -> bool:
+        normalized = str(domain or "").lower().removeprefix("www.")
+        return any(normalized.endswith(trusted) for trusted in TRUSTED_SOURCE_DOMAINS)
+
+    @classmethod
+    def _story_age_hours(cls, story: dict[str, Any], *, now: datetime | None = None) -> float | None:
+        published_at = story.get("published_at")
+        if not published_at:
+            return None
+        try:
+            if isinstance(published_at, datetime):
+                parsed = published_at
+            else:
+                parsed = cls._parse_iso(str(published_at))
+        except Exception:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        reference = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        return max(0.0, (reference - parsed.astimezone(timezone.utc)).total_seconds() / 3600)
+
+    @staticmethod
     def _score_candidate(candidate: ArticleCandidate) -> float:
         score = 10
         title_lower = candidate.title.lower()
@@ -2823,13 +3014,20 @@ Generated at: {generated_at}
                 domain = DailyBriefPipeline._domain_name(article.url)
                 domain_counts[domain] = domain_counts.get(domain, 0) + 1
 
-        return DailyBriefPipeline._ensure_minimum_topic_articles(
-            selected,
-            articles,
-            topic="SPORTS",
-            minimum=2,
-            limit=limit,
+        topic_minimums = (
+            SOURCE_PACKET_TOPIC_MINIMUMS
+            if limit >= 24
+            else {"SPORTS": SOURCE_PACKET_TOPIC_MINIMUMS["SPORTS"]}
         )
+        for topic, minimum in topic_minimums.items():
+            selected = DailyBriefPipeline._ensure_minimum_topic_articles(
+                selected,
+                articles,
+                topic=topic,
+                minimum=minimum,
+                limit=limit,
+            )
+        return selected
 
     @staticmethod
     def _ensure_minimum_topic_articles(

@@ -167,9 +167,17 @@ def audit_daily_brief(
             f"{max_final_score_age}: {', '.join(stale_final_score_ids)}"
         )
 
+    coverage = brief.get("coverage_report") if isinstance(brief.get("coverage_report"), dict) else {}
     summary = {
         "story_count": len(stories),
         "valid_image_count": valid_image_count,
+        "source_packet_count": coverage.get("source_packet_count", brief.get("source_count")),
+        "source_packet_domains": coverage.get("source_packet_domains"),
+        "leading_trusted_story_count": coverage.get("leading_trusted_story_count"),
+        "max_leading_domain_count": coverage.get("max_leading_domain_count"),
+        "visible_story_topics": sorted(
+            (coverage.get("story_topic_counts") or {}).keys()
+        ) if isinstance(coverage.get("story_topic_counts"), dict) else None,
         "sports_story_count": sports_story_count,
         "sports_score_count": len(scores),
         "latest_sports_verified_at": latest_verified_at.isoformat() if latest_verified_at else None,
