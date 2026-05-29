@@ -156,6 +156,9 @@ def main():
         
         if success:
             print("✅ Successfully stored sports data in Firebase")
+            archived_finals = SportsStorage.archive_stale_final_scores()
+            if archived_finals:
+                print(f"✅ Archived {archived_finals} stale final score(s)")
             
             # Process game summaries after storing sports data
             print("\n====== Processing Game Summaries ======")

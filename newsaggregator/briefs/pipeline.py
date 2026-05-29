@@ -570,6 +570,8 @@ class DailyBriefPipeline:
         sports_source_count = sum(1 for article in articles if self._normalize_topic(article.topic) == "SPORTS")
         print(f"Source packet sports stories: {sports_source_count}")
 
+        if self.options.publish:
+            self._archive_stale_firestore_scores()
         self.sports_score_cards = self._fetch_top_sports_scores()
         print(f"Sports scores: selected {len(self.sports_score_cards)} game(s)")
 
@@ -1630,6 +1632,20 @@ Sports score packet:
             "sports_scores_source": "ESPN",
         }
 
+    @staticmethod
+    def _archive_stale_firestore_scores() -> int:
+        try:
+            from newsaggregator.storage.sports_storage import SportsStorage
+
+            archived = SportsStorage.archive_stale_final_scores()
+        except Exception as exc:
+            print(f"[WARN] Stale final score cleanup skipped: {exc}")
+            return 0
+
+        if archived:
+            print(f"Archived {archived} stale Firestore final score(s)")
+        return archived
+
     @classmethod
     def _coverage_report(
         cls,
@@ -2453,6 +2469,7 @@ Sports score packet:
             firebase_admin.initialize_app(cred_obj)
 
         db = firestore.client()
+        self._archive_stale_firestore_scores()
         score_cards = self._fetch_top_sports_scores()[:6]
         refreshed_at = datetime.now(timezone.utc)
 

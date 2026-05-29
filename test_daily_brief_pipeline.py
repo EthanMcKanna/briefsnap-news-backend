@@ -1158,6 +1158,16 @@ def test_score_cards_do_not_display_after_expiration():
     )
 
 
+def test_archive_stale_firestore_scores_uses_sports_storage_cleanup():
+    with patch(
+        "newsaggregator.storage.sports_storage.SportsStorage.archive_stale_final_scores",
+        return_value=3,
+    ) as archive:
+        assert DailyBriefPipeline._archive_stale_firestore_scores() == 3
+
+    archive.assert_called_once_with()
+
+
 def test_image_url_filter_accepts_validated_cdn_image_shapes():
     assert ArticleFetcher._is_valid_image_url(
         "https://images.example.com/media/story/abc123?w=1200&format=webp"
