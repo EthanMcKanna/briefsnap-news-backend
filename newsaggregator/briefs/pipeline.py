@@ -1337,7 +1337,7 @@ Sports score packet:
         normalized = DailyBriefPipeline._normalize_topic(topic)
         if normalized == "TOP_NEWS":
             return 3
-        return max(2, min(SOURCE_PACKET_TOPIC_MINIMUMS.get(normalized, 2), 3))
+        return 2
 
     def _fallback_brief(self, articles: list[ArticleCandidate], model_used: str) -> dict[str, Any]:
         now = datetime.now(timezone.utc)
