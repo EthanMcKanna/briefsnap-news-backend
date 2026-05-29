@@ -166,6 +166,7 @@ MAX_ARTICLES_PER_DOMAIN = int(os.environ.get("BRIEFSNAP_MAX_ARTICLES_PER_DOMAIN"
 MAX_LEADING_STORIES_PER_DOMAIN = int(os.environ.get("BRIEFSNAP_MAX_LEADING_STORIES_PER_DOMAIN", "2"))
 MIN_LEADING_TRUSTED_STORIES = int(os.environ.get("BRIEFSNAP_MIN_LEADING_TRUSTED_STORIES", "4"))
 MIN_VISIBLE_STORY_TOPICS = int(os.environ.get("BRIEFSNAP_MIN_VISIBLE_STORY_TOPICS", "4"))
+MIN_NORMALIZED_STORIES = int(os.environ.get("BRIEFSNAP_MIN_NORMALIZED_STORIES", "10"))
 MAX_STALE_LEADING_STORY_HOURS = int(os.environ.get("BRIEFSNAP_MAX_STALE_LEADING_STORY_HOURS", "72"))
 SOURCE_PACKET_TOPIC_MINIMUMS: dict[str, int] = {
     "TOP_NEWS": 6,
@@ -1066,6 +1067,7 @@ Sports score packet:
             return self._fallback_brief(articles, model_used=model_used)
 
         self._ensure_sports_news_stories(normalized_stories, articles, story_ids)
+        self._ensure_topic_breadth_stories(normalized_stories, articles, story_ids)
 
         now = datetime.now(timezone.utc)
         sections = self._normalize_sections(payload.get("sections", []), normalized_stories, articles)
@@ -1246,6 +1248,95 @@ Sports score packet:
             if DailyBriefPipeline._normalize_topic(stories[index].get("topic")) != normalized_protected:
                 return index
         return None
+
+    def _ensure_topic_breadth_stories(
+        self,
+        stories: list[dict[str, Any]],
+        articles: list[ArticleCandidate],
+        story_ids: set[str],
+    ) -> None:
+        topic_groups = self._topic_article_groups(articles)
+        if not topic_groups:
+            return
+
+        preferred_topics = [
+            "TOP_NEWS",
+            "WORLD",
+            "BUSINESS",
+            "TECHNOLOGY",
+            "HEALTH",
+            "SCIENCE",
+            "SPORTS",
+            "ENTERTAINMENT",
+        ]
+        supported_topics = [
+            topic
+            for topic in preferred_topics
+            if len(topic_groups.get(topic, [])) >= self._minimum_sources_for_topic(topic)
+        ]
+        if not supported_topics:
+            return
+
+        target_topic_count = min(max(MIN_VISIBLE_STORY_TOPICS, 5), len(supported_topics))
+        visible_topics = {
+            self._normalize_topic(story.get("topic"))
+            for story in stories[:18]
+            if story.get("topic")
+        }
+        visible_topics.discard("")
+
+        for topic in supported_topics:
+            if len(visible_topics) >= target_topic_count:
+                break
+            if topic in visible_topics:
+                continue
+            article = next(
+                (
+                    candidate
+                    for candidate in topic_groups.get(topic, [])
+                    if candidate.id not in story_ids
+                ),
+                None,
+            )
+            if not article:
+                continue
+            if topic == "SPORTS" and not self._is_high_signal_sports_candidate(
+                title=article.title,
+                source=article.source,
+                url=article.url,
+                description=article.description or article.content[:400],
+            ):
+                continue
+            story_ids.add(article.id)
+            stories.append(self._normalized_story_from_article(article))
+            visible_topics.add(topic)
+
+        target_story_count = min(max(MIN_NORMALIZED_STORIES, target_topic_count + 3), len(articles), 18)
+        if len(stories) >= target_story_count:
+            return
+
+        for article in articles:
+            if len(stories) >= target_story_count:
+                break
+            if article.id in story_ids:
+                continue
+            topic = self._normalize_topic(article.topic)
+            if topic == "SPORTS" and not self._is_high_signal_sports_candidate(
+                title=article.title,
+                source=article.source,
+                url=article.url,
+                description=article.description or article.content[:400],
+            ):
+                continue
+            story_ids.add(article.id)
+            stories.append(self._normalized_story_from_article(article))
+
+    @staticmethod
+    def _minimum_sources_for_topic(topic: str) -> int:
+        normalized = DailyBriefPipeline._normalize_topic(topic)
+        if normalized == "TOP_NEWS":
+            return 3
+        return max(2, min(SOURCE_PACKET_TOPIC_MINIMUMS.get(normalized, 2), 3))
 
     def _fallback_brief(self, articles: list[ArticleCandidate], model_used: str) -> dict[str, Any]:
         now = datetime.now(timezone.utc)
@@ -2062,7 +2153,7 @@ Sports score packet:
             if story.get("topic")
         }
         visible_topics.discard("")
-        if len(stories) >= 8 and len(visible_topics) < MIN_VISIBLE_STORY_TOPICS:
+        if len(stories) >= 6 and len(visible_topics) < MIN_VISIBLE_STORY_TOPICS:
             issues.append("visible stories need broader topic coverage")
         if stories[:3] and not any(
             self._normalize_topic(story.get("topic")) == "TOP_NEWS"

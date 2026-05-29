@@ -514,6 +514,63 @@ def test_normalize_brief_keeps_backfilled_sports_inside_visible_story_window():
     assert {"sports-1", "sports-2"}.issubset(visible_story_ids)
 
 
+def test_normalize_brief_backfills_supported_topic_breadth_when_model_omits_it():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    topics = [
+        ("TOP_NEWS", "Reuters", "https://www.reuters.com/world/us"),
+        ("BUSINESS", "CNBC", "https://www.cnbc.com/business"),
+        ("TECHNOLOGY", "The Verge", "https://www.theverge.com/tech"),
+        ("WORLD", "BBC", "https://www.bbc.com/news/world"),
+        ("HEALTH", "STAT", "https://www.statnews.com/health"),
+        ("SCIENCE", "AP News", "https://apnews.com/science"),
+    ]
+    articles: list[ArticleCandidate] = []
+    for topic, source, base_url in topics:
+        for index in range(1, 4):
+            articles.append(
+                ArticleCandidate(
+                    id=f"{topic.lower()}-{index}",
+                    topic=topic,
+                    title=f"{topic.title()} story {index} carries verified public impact",
+                    source=source,
+                    url=f"{base_url}/story-{index}",
+                    description=f"{topic} source packet summary {index} with enough detail for readers.",
+                    score=50 - len(articles),
+                )
+            )
+
+    payload = {
+        "headline": "Top news and business lead the day",
+        "summary": "A concise current summary.",
+        "quick_hits": ["Top news and business lead the day"],
+        "stories": [
+            {
+                "id": article.id,
+                "topic": article.topic,
+                "title": article.title,
+                "source": article.source,
+                "summary": article.description,
+                "why_it_matters": "Readers get a concrete current consequence.",
+            }
+            for article in articles[:6]
+        ],
+        "sections": [],
+        "custom_widgets": [],
+    }
+
+    brief = pipeline._normalize_brief(payload, articles, "gemini-3-flash-preview-search-grounded")
+    visible_topics = {
+        pipeline._normalize_topic(story.get("topic"))
+        for story in brief["stories"][:12]
+        if story.get("topic")
+    }
+
+    assert len(brief["stories"]) >= 10
+    assert len(visible_topics) >= 5
+    assert {"TECHNOLOGY", "WORLD", "HEALTH"}.issubset(visible_topics)
+    assert "visible stories need broader topic coverage" not in pipeline._brief_quality_issues(brief)
+
+
 def test_quality_gate_rejects_scores_without_sports_news_story():
     pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
     score = DailyBriefPipeline._parse_score_event(
