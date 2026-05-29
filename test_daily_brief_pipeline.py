@@ -571,6 +571,49 @@ def test_normalize_brief_backfills_supported_topic_breadth_when_model_omits_it()
     assert "visible stories need broader topic coverage" not in pipeline._brief_quality_issues(brief)
 
 
+def test_collect_articles_reserves_late_sports_topic_before_enrichment():
+    pipeline = DailyBriefPipeline(
+        PipelineOptions(
+            dry_run=True,
+            publish=False,
+            max_articles_per_topic=1,
+            max_total_articles=6,
+        )
+    )
+
+    def fake_collect_topic(topic):
+        if topic.code == "SPORTS":
+            return [
+                ArticleCandidate(
+                    id="sports-1",
+                    topic="SPORTS",
+                    title="NBA playoff injury report reshapes the finals race",
+                    source="ESPN",
+                    url="https://www.espn.com/nba/story/_/id/sports-1/nba-playoff-injury-report",
+                    description="A late NBA injury update changed rotations before tonight's playoff game.",
+                    score=1,
+                )
+            ]
+        return [
+            ArticleCandidate(
+                id=f"{topic.code.lower()}-1",
+                topic=topic.code,
+                title=f"{topic.code.title()} story carries verified public impact",
+                source="Associated Press",
+                url=f"https://apnews.com/article/{topic.code.lower()}-1",
+                description="A current source-backed update with enough detail.",
+                score=100,
+            )
+        ]
+
+    with patch.object(pipeline, "_collect_topic", side_effect=fake_collect_topic):
+        with patch.object(pipeline, "_enrich_articles", side_effect=lambda candidates: candidates):
+            articles = pipeline.collect_articles()
+
+    assert len(articles) == 6
+    assert "SPORTS" in {pipeline._normalize_topic(article.topic) for article in articles}
+
+
 def test_quality_gate_rejects_scores_without_sports_news_story():
     pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
     score = DailyBriefPipeline._parse_score_event(

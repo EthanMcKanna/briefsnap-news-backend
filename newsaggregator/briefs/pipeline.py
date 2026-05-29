@@ -606,7 +606,8 @@ class DailyBriefPipeline:
             print(f"{topic.code}: selected {len(topic_candidates[: self.options.max_articles_per_topic])}")
 
         deduped = self._dedupe(candidates)
-        enriched = self._enrich_articles(deduped[: self.options.max_total_articles])
+        source_packet = self._diversify_articles(deduped, limit=self.options.max_total_articles)
+        enriched = self._enrich_articles(source_packet)
         ranked = sorted(enriched, key=lambda article: article.score, reverse=True)
         return self._diversify_articles(ranked, limit=self.options.max_total_articles)
 
