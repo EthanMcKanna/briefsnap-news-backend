@@ -1236,6 +1236,9 @@ Sports score packet:
         normalized_stories = self._rebalance_story_order(normalized_stories, articles)
         normalized_stories = self._ensure_story_image_coverage(normalized_stories, articles)
         normalized_stories = self._filter_story_list_for_publish(normalized_stories)
+        story_ids = {str(story.get("id")) for story in normalized_stories if story.get("id")}
+        self._ensure_sports_news_stories(normalized_stories, articles, story_ids)
+        self._ensure_topic_breadth_stories(normalized_stories, articles, story_ids)
         normalized_stories = self._rebalance_story_order(normalized_stories, articles)
 
         now = datetime.now(timezone.utc)
@@ -1777,6 +1780,9 @@ Sports score packet:
         stories = self._rebalance_story_order(stories, articles)
         stories = self._ensure_story_image_coverage(stories, articles)
         stories = self._filter_story_list_for_publish(stories)
+        story_ids = {str(story.get("id")) for story in stories if story.get("id")}
+        self._ensure_sports_news_stories(stories, articles, story_ids)
+        self._ensure_topic_breadth_stories(stories, articles, story_ids)
         stories = self._rebalance_story_order(stories, articles)
         score_cards = self.sports_score_cards[:6]
         headline, dek, summary, quick_hits = self._grounded_top_level_copy(payload={}, stories=stories)
