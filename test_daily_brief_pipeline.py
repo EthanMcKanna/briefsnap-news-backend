@@ -1374,6 +1374,15 @@ def test_low_density_filler_candidates_are_rejected_before_story_selection():
             },
             "TOP_NEWS",
         ),
+        (
+            {
+                "title": "Exercise Aids Healthy Aging",
+                "url": "https://www.naturalnews.com/2026-05-31-exercise-healthy-aging.html",
+                "source": "Naturalnews.com",
+                "description": "A health item from a source that should not enter a factual brief.",
+            },
+            "HEALTH",
+        ),
     ]
 
     for raw_item, topic_code in cases:

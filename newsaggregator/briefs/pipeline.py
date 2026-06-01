@@ -69,6 +69,7 @@ LOW_VALUE_SOURCE_DOMAINS: tuple[str, ...] = (
     "globenewswire.com",
     "businesswire.com",
     "accesswire.com",
+    "naturalnews.com",
 )
 
 LOW_VALUE_SOURCE_MARKERS: tuple[str, ...] = (
