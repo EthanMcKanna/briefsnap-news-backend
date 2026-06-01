@@ -1,5 +1,6 @@
 """Focused tests for the daily brief contract consumed by the iOS app."""
 
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
@@ -1476,6 +1477,106 @@ def test_top_news_candidates_are_reclassified_into_real_editorial_lanes():
     assert world.topic == "WORLD"
     assert business is not None
     assert business.topic == "BUSINESS"
+
+
+def test_topic_selection_diversifies_domains_before_source_packet():
+    articles = [
+        ArticleCandidate(
+            id=f"{domain}-{index}",
+            topic="WORLD",
+            title=f"World story {domain} {index}",
+            source=domain,
+            url=f"https://{domain}/story-{index}",
+            score=100 - index,
+        )
+        for index, domain in enumerate(
+            ["npr.org"] * 6 + ["bbc.com"] * 4 + ["theguardian.com"] * 4,
+            start=1,
+        )
+    ]
+
+    selected = DailyBriefPipeline._diversify_articles(articles, limit=8)
+    domain_counts = Counter(DailyBriefPipeline._domain_name(article.url) for article in selected)
+
+    assert domain_counts["npr.org"] <= 3
+    assert len(domain_counts) >= 3
+
+
+def test_source_packet_order_does_not_frontload_sports():
+    articles = [
+        ArticleCandidate(
+            id=f"sports-{index}",
+            topic="SPORTS",
+            title=f"NBA playoff game {index}",
+            source="ESPN",
+            url=f"https://www.espn.com/nba/story/{index}",
+            score=100 - index,
+        )
+        for index in range(1, 7)
+    ] + [
+        ArticleCandidate(
+            id=topic.lower(),
+            topic=topic,
+            title=f"{topic} major story",
+            source=source,
+            url=url,
+            score=50 - index,
+        )
+        for index, (topic, source, url) in enumerate(
+            [
+                ("TOP_NEWS", "Reuters", "https://www.reuters.com/world/us/major-story"),
+                ("WORLD", "BBC", "https://www.bbc.com/news/world-major-story"),
+                ("BUSINESS", "CNBC", "https://www.cnbc.com/business-major-story"),
+                ("TECHNOLOGY", "The Verge", "https://www.theverge.com/tech/major-story"),
+                ("HEALTH", "STAT", "https://www.statnews.com/health/major-story"),
+                ("SCIENCE", "NASA", "https://www.nasa.gov/news-release/major-story"),
+            ],
+            start=1,
+        )
+    ]
+
+    ordered = DailyBriefPipeline._rebalance_article_order(articles)
+    leading_topics = Counter(article.topic for article in ordered[:8])
+
+    assert ordered[0].topic == "TOP_NEWS"
+    assert leading_topics["SPORTS"] <= 2
+    assert len({DailyBriefPipeline._domain_name(article.url) for article in ordered[:8]}) >= 4
+
+
+def test_publish_story_filter_removes_editorial_failures_before_quality_gate():
+    stories = [
+        {
+            "id": "good-world",
+            "topic": "WORLD",
+            "title": "European leaders agree on new defense financing",
+            "source": "Reuters",
+            "url": "https://www.reuters.com/world/europe/defense-financing",
+            "summary": "The agreement changes near-term defense planning.",
+            "why_it_matters": "It affects security budgets and NATO planning.",
+        },
+        {
+            "id": "bad-health",
+            "topic": "HEALTH",
+            "title": "Opinion | The president's health is the people's business",
+            "source": "The Washington Post",
+            "url": "https://www.washingtonpost.com/opinions/president-health",
+            "summary": "Opinion column about political disclosure.",
+            "why_it_matters": "It is commentary rather than factual health coverage.",
+        },
+        {
+            "id": "bad-sports",
+            "topic": "SPORTS",
+            "title": "A celebrity watches from courtside",
+            "source": "NPR",
+            "url": "https://www.npr.org/2026/05/31/courtside-celebrity",
+            "summary": "A culture item about a celebrity appearance.",
+            "why_it_matters": "It is entertainment context rather than team coverage.",
+        },
+    ]
+
+    filtered = DailyBriefPipeline._filter_story_list_for_publish(stories)
+
+    assert [story["id"] for story in filtered] == ["good-world"]
 
 
 def test_quality_gate_requires_supported_topic_breadth():

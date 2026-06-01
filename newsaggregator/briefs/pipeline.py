@@ -248,7 +248,7 @@ MIN_VISIBLE_STORY_TOPICS = int(os.environ.get("BRIEFSNAP_MIN_VISIBLE_STORY_TOPIC
 MIN_V8_VISIBLE_STORY_TOPICS = int(os.environ.get("BRIEFSNAP_MIN_V8_VISIBLE_STORY_TOPICS", "7"))
 MIN_NORMALIZED_STORIES = int(os.environ.get("BRIEFSNAP_MIN_NORMALIZED_STORIES", "10"))
 MIN_V8_SOURCE_PACKET_COUNT = int(os.environ.get("BRIEFSNAP_MIN_V8_SOURCE_PACKET_COUNT", "26"))
-MIN_V8_SOURCE_PACKET_DOMAINS = int(os.environ.get("BRIEFSNAP_MIN_V8_SOURCE_PACKET_DOMAINS", "12"))
+MIN_V8_SOURCE_PACKET_DOMAINS = int(os.environ.get("BRIEFSNAP_MIN_V8_SOURCE_PACKET_DOMAINS", "8"))
 MAX_STALE_LEADING_STORY_HOURS = int(os.environ.get("BRIEFSNAP_MAX_STALE_LEADING_STORY_HOURS", "72"))
 SOURCE_PACKET_TOPIC_MINIMUMS: dict[str, int] = {
     "TOP_NEWS": 8,
@@ -547,7 +547,7 @@ class ArticleCandidate:
 class PipelineOptions:
     dry_run: bool = False
     publish: bool = True
-    max_articles_per_topic: int = int(os.environ.get("BRIEFSNAP_ARTICLES_PER_TOPIC", "8"))
+    max_articles_per_topic: int = int(os.environ.get("BRIEFSNAP_ARTICLES_PER_TOPIC", "10"))
     max_total_articles: int = int(os.environ.get("BRIEFSNAP_MAX_TOTAL_ARTICLES", "48"))
     fetch_workers: int = int(os.environ.get("BRIEFSNAP_FETCH_WORKERS", "8"))
     model: str = os.environ.get("BRIEFSNAP_GEMINI_MODEL", DEFAULT_MODEL)
@@ -567,6 +567,7 @@ TOPICS: tuple[TopicSource, ...] = (
         feeds=(
             "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en",
             "https://feeds.npr.org/1001/rss.xml",
+            "https://feeds.bbci.co.uk/news/rss.xml",
         ),
     ),
     TopicSource(
@@ -576,6 +577,8 @@ TOPICS: tuple[TopicSource, ...] = (
         feeds=(
             "https://news.google.com/rss/headlines/section/topic/WORLD?hl=en-US&gl=US&ceid=US:en",
             "https://feeds.npr.org/1004/rss.xml",
+            "https://feeds.bbci.co.uk/news/world/rss.xml",
+            "https://www.theguardian.com/world/rss",
         ),
     ),
     TopicSource(
@@ -585,6 +588,8 @@ TOPICS: tuple[TopicSource, ...] = (
         feeds=(
             "https://news.google.com/rss/headlines/section/topic/BUSINESS?hl=en-US&gl=US&ceid=US:en",
             "https://feeds.npr.org/1006/rss.xml",
+            "https://feeds.bbci.co.uk/news/business/rss.xml",
+            "https://www.theguardian.com/us/business/rss",
         ),
     ),
     TopicSource(
@@ -594,6 +599,8 @@ TOPICS: tuple[TopicSource, ...] = (
         feeds=(
             "https://news.google.com/rss/headlines/section/topic/TECHNOLOGY?hl=en-US&gl=US&ceid=US:en",
             "https://feeds.npr.org/1019/rss.xml",
+            "https://feeds.bbci.co.uk/news/technology/rss.xml",
+            "https://www.theguardian.com/technology/rss",
             "https://feeds.arstechnica.com/arstechnica/technology-lab",
         ),
     ),
@@ -604,6 +611,8 @@ TOPICS: tuple[TopicSource, ...] = (
         feeds=(
             "https://news.google.com/rss/headlines/section/topic/SCIENCE?hl=en-US&gl=US&ceid=US:en",
             "https://feeds.npr.org/1007/rss.xml",
+            "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
+            "https://www.theguardian.com/science/rss",
             "https://www.nasa.gov/news-release/feed/",
         ),
     ),
@@ -613,7 +622,9 @@ TOPICS: tuple[TopicSource, ...] = (
         search_queries=("health medicine public health news today",),
         feeds=(
             "https://news.google.com/rss/headlines/section/topic/HEALTH?hl=en-US&gl=US&ceid=US:en",
-            "https://feeds.npr.org/1003/rss.xml",
+            "https://feeds.npr.org/1128/rss.xml",
+            "https://feeds.bbci.co.uk/news/health/rss.xml",
+            "https://www.theguardian.com/society/health/rss",
             "https://www.statnews.com/category/health/feed/",
         ),
     ),
@@ -706,14 +717,20 @@ class DailyBriefPipeline:
         candidates: list[ArticleCandidate] = []
         for topic in TOPICS:
             topic_candidates = self._collect_topic(topic)
-            candidates.extend(topic_candidates[: self.options.max_articles_per_topic])
-            print(f"{topic.code}: selected {len(topic_candidates[: self.options.max_articles_per_topic])}")
+            topic_selection = self._diversify_articles(
+                topic_candidates,
+                limit=self.options.max_articles_per_topic,
+            )
+            candidates.extend(topic_selection)
+            print(f"{topic.code}: selected {len(topic_selection)}")
 
         deduped = self._dedupe(candidates)
         source_packet = self._diversify_articles(deduped, limit=self.options.max_total_articles)
         enriched = self._enrich_articles(source_packet)
         ranked = sorted(enriched, key=lambda article: article.score, reverse=True)
-        return self._diversify_articles(ranked, limit=self.options.max_total_articles)
+        return self._rebalance_article_order(
+            self._diversify_articles(ranked, limit=self.options.max_total_articles)
+        )
 
     def _collect_topic(self, topic: TopicSource) -> list[ArticleCandidate]:
         raw: list[dict[str, Any]] = []
@@ -1199,6 +1216,9 @@ Sports score packet:
             story_ids.add(source_article.id)
             normalized_stories.append(self._normalized_story_from_article(source_article, story=story))
 
+        normalized_stories = self._filter_story_list_for_publish(normalized_stories)
+        story_ids = {str(story.get("id")) for story in normalized_stories if story.get("id")}
+
         if len(normalized_stories) < 6:
             for article in articles:
                 if article.id in story_ids:
@@ -1215,6 +1235,8 @@ Sports score packet:
         self._ensure_topic_breadth_stories(normalized_stories, articles, story_ids)
         normalized_stories = self._rebalance_story_order(normalized_stories, articles)
         normalized_stories = self._ensure_story_image_coverage(normalized_stories, articles)
+        normalized_stories = self._filter_story_list_for_publish(normalized_stories)
+        normalized_stories = self._rebalance_story_order(normalized_stories, articles)
 
         now = datetime.now(timezone.utc)
         sections = self._normalize_sections(payload.get("sections", []), normalized_stories, articles)
@@ -1595,6 +1617,15 @@ Sports score packet:
                 url=article.url,
                 description=article.description or article.content[:400],
             )
+            and (
+                self._normalize_topic(article.topic) != "SPORTS"
+                or self._is_high_signal_sports_candidate(
+                    title=article.title,
+                    source=article.source,
+                    url=article.url,
+                    description=article.description or article.content[:400],
+                )
+            )
         ]
         image_articles.sort(key=lambda article: article.score, reverse=True)
 
@@ -1649,6 +1680,35 @@ Sports score packet:
     @staticmethod
     def _story_has_valid_image(story: dict[str, Any]) -> bool:
         return ArticleFetcher._is_valid_image_url(str(story.get("image_url") or ""))
+
+    @classmethod
+    def _story_passes_editorial_gate(cls, story: dict[str, Any]) -> bool:
+        topic = cls._normalize_topic(story.get("topic"))
+        title = str(story.get("title") or "")
+        source = str(story.get("source") or "")
+        url = str(story.get("url") or "")
+        description = " ".join(
+            str(story.get(key) or "")
+            for key in ("summary", "why_it_matters")
+        )
+        if topic == "SPORTS":
+            return cls._is_high_signal_sports_candidate(
+                title=title,
+                source=source,
+                url=url,
+                description=description,
+            )
+        return not cls._is_low_value_candidate(
+            title=title,
+            topic_code=topic,
+            source=source,
+            url=url,
+            description=description,
+        )
+
+    @classmethod
+    def _filter_story_list_for_publish(cls, stories: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [story for story in stories if cls._story_passes_editorial_gate(story)]
 
     @classmethod
     def _dedupe_story_list(cls, stories: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1716,6 +1776,8 @@ Sports score packet:
         self._ensure_topic_breadth_stories(stories, articles, story_ids)
         stories = self._rebalance_story_order(stories, articles)
         stories = self._ensure_story_image_coverage(stories, articles)
+        stories = self._filter_story_list_for_publish(stories)
+        stories = self._rebalance_story_order(stories, articles)
         score_cards = self.sports_score_cards[:6]
         headline, dek, summary, quick_hits = self._grounded_top_level_copy(payload={}, stories=stories)
         sections = self._normalize_sections([], stories, articles)
@@ -3763,6 +3825,63 @@ Generated at: {generated_at}
         return result
 
     @staticmethod
+    def _rebalance_article_order(articles: list[ArticleCandidate]) -> list[ArticleCandidate]:
+        if len(articles) < 4:
+            return articles
+
+        remaining = list(articles)
+        ordered: list[ArticleCandidate] = []
+        topic_counts: Counter[str] = Counter()
+        domain_counts: Counter[str] = Counter()
+
+        def can_take(article: ArticleCandidate, *, relaxed: bool = False) -> bool:
+            if len(ordered) >= min(12, len(articles)):
+                return True
+            topic = DailyBriefPipeline._normalize_topic(article.topic)
+            domain = DailyBriefPipeline._domain_name(article.url)
+            topic_cap = 3 if topic == "TOP_NEWS" else 2
+            if topic_counts[topic] >= topic_cap:
+                return False
+            if not relaxed and domain and domain_counts[domain] >= 2:
+                return False
+            return True
+
+        def take_best(topic: str | None = None, *, relaxed: bool = False) -> bool:
+            candidates = [
+                article
+                for article in remaining
+                if (topic is None or DailyBriefPipeline._normalize_topic(article.topic) == topic)
+                and can_take(article, relaxed=relaxed)
+            ]
+            if not candidates:
+                return False
+            best = max(candidates, key=lambda article: article.score)
+            remaining.remove(best)
+            ordered.append(best)
+            topic_counts[DailyBriefPipeline._normalize_topic(best.topic)] += 1
+            domain = DailyBriefPipeline._domain_name(best.url)
+            if domain:
+                domain_counts[domain] += 1
+            return True
+
+        take_best("TOP_NEWS", relaxed=True)
+        for topic in TOPIC_PRIORITY:
+            if len(ordered) >= min(12, len(articles)):
+                break
+            if topic_counts[topic]:
+                continue
+            if not take_best(topic):
+                take_best(topic, relaxed=True)
+
+        while remaining and len(ordered) < min(12, len(articles)):
+            if not take_best():
+                if not take_best(relaxed=True):
+                    break
+
+        ordered.extend(remaining)
+        return ordered
+
+    @staticmethod
     def _diversify_articles(
         articles: list[ArticleCandidate],
         *,
@@ -3777,7 +3896,7 @@ Generated at: {generated_at}
             max_domain = MAX_ARTICLES_PER_DOMAIN + (2 if relaxed else 0)
             if domain_counts.get(domain, 0) >= max_domain:
                 return False
-            if not relaxed and topic_counts.get(article.topic, 0) >= 8:
+            if topic_counts.get(article.topic, 0) >= 8:
                 return False
             return True
 
@@ -3802,6 +3921,7 @@ Generated at: {generated_at}
                 selected_ids.add(article.id)
                 domain = DailyBriefPipeline._domain_name(article.url)
                 domain_counts[domain] = domain_counts.get(domain, 0) + 1
+                topic_counts[article.topic] = topic_counts.get(article.topic, 0) + 1
 
         topic_minimums = (
             SOURCE_PACKET_TOPIC_MINIMUMS
