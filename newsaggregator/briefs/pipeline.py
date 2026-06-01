@@ -1441,7 +1441,6 @@ Sports score packet:
             "HEALTH",
             "SCIENCE",
             "SPORTS",
-            "ENTERTAINMENT",
         ]
         supported_topics = [
             topic
@@ -2640,6 +2639,7 @@ Sports score packet:
             supported_topics = [
                 topic
                 for topic in TOPIC_PRIORITY
+                if topic != "ENTERTAINMENT"
                 if source_topic_counts.get(topic, 0) >= self._minimum_sources_for_topic(topic)
             ]
             visible_supported_topics = [

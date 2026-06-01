@@ -1634,7 +1634,7 @@ def test_quality_gate_requires_science_when_source_supported():
     assert any("science item when source-supported" in issue for issue in issues)
 
 
-def test_quality_gate_does_not_force_single_source_entertainment_lane():
+def test_quality_gate_does_not_force_entertainment_lane():
     brief = valid_quality_brief()
     brief["stories"].extend(
         [
@@ -1669,7 +1669,7 @@ def test_quality_gate_does_not_force_single_source_entertainment_lane():
             "HEALTH": 2,
             "SCIENCE": 2,
             "SPORTS": 3,
-            "ENTERTAINMENT": 1,
+            "ENTERTAINMENT": 8,
         },
     }
     pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
