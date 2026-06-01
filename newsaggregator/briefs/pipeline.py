@@ -203,6 +203,38 @@ SPORTS_SECTION_DRIFT_TERMS: tuple[str, ...] = (
     "celebrity",
 )
 
+HEALTH_SIGNAL_TERMS: tuple[str, ...] = (
+    "cancer",
+    "care",
+    "cdc",
+    "clinical",
+    "clinic",
+    "disease",
+    "doctor",
+    "drug",
+    "ebola",
+    "fda",
+    "health",
+    "hospital",
+    "insurance",
+    "maternity",
+    "medicaid",
+    "medical",
+    "medicare",
+    "medicine",
+    "mental health",
+    "mortality",
+    "obesity",
+    "outbreak",
+    "patient",
+    "pregnancy",
+    "public health",
+    "treatment",
+    "therapy",
+    "vaccine",
+    "virus",
+)
+
 TOP_LEVEL_COPY_ENTITY_STOPWORDS: set[str] = {
     "a",
     "an",
@@ -3677,6 +3709,9 @@ Generated at: {generated_at}
                 "hummingbird-red flower connection",
             )
         ):
+            return True
+        health_text = f"{lowered_title} {description.lower()} {lowered_url}"
+        if normalized_topic == "HEALTH" and not cls._contains_any_term(health_text, HEALTH_SIGNAL_TERMS):
             return True
         if normalized_topic == "WORLD" and (
             ("campaign" in lowered_title and ("wife" in lowered_title or "texts" in lowered_title))

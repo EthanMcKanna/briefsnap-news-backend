@@ -1395,6 +1395,15 @@ def test_low_density_filler_candidates_are_rejected_before_story_selection():
         ),
         (
             {
+                "title": "The biggest permanent desert lake threatens with rising waters and hungry crocs",
+                "url": "https://www.npr.org/2026/05/31/desert-lake-crocodiles",
+                "source": "NPR Topics: Health",
+                "description": "A climate and wildlife feature about flooding and crocodiles.",
+            },
+            "HEALTH",
+        ),
+        (
+            {
                 "title": "The hummingbird-red flower connection, with Harvard's Patrick McKenzie",
                 "url": "https://awaytogarden.com/hummingbird-red-flower-connection/",
                 "source": "A Way To Garden",
