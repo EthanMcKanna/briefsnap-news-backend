@@ -19,6 +19,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 
 from newsaggregator.briefs.pipeline import DailyBriefPipeline, PipelineOptions
 from newsaggregator.fetchers.article_fetcher import ArticleFetcher
+from newsaggregator.storage.sports_storage import SportsStorage
 
 
 def parse_datetime(value: Any) -> datetime | None:
@@ -216,12 +217,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-sports-age-minutes", type=float, default=20)
     parser.add_argument("--max-final-score-age-hours", type=float, default=6)
     parser.add_argument("--skip-current-espn", action="store_true")
+    parser.add_argument(
+        "--skip-stale-score-cleanup",
+        action="store_true",
+        help="Do not archive stale final sports_games rows before auditing",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     now = datetime.now(timezone.utc)
+    if not args.skip_stale_score_cleanup:
+        archived = SportsStorage.archive_stale_final_scores(
+            now=now,
+            max_age_hours=args.max_final_score_age_hours,
+        )
+        if archived:
+            print(f"Archived {archived} stale final sports score row(s) before audit")
+
     doc_id, brief = latest_daily_brief(args.doc_id)
     issues, summary = audit_daily_brief(
         brief,

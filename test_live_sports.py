@@ -5,7 +5,70 @@ from datetime import datetime
 from newsaggregator.fetchers.live_sports_fetcher import LiveSportsFetcher
 from newsaggregator.storage.sports_storage import SportsStorage
 
-def test_live_fetcher():
+
+def _synthetic_live_games():
+    return {
+        'mlb': [
+            {
+                'sport': 'mlb',
+                'away_team': {'abbreviation': 'SEA'},
+                'home_team': {'abbreviation': 'NYY'},
+                'away_score': 3,
+                'home_score': 4,
+                'status': 'Bot 7th',
+                'time_remaining': 'Bot 7th',
+                'is_final': False,
+            },
+            {
+                'sport': 'mlb',
+                'away_team': {'abbreviation': 'LAD'},
+                'home_team': {'abbreviation': 'SF'},
+                'away_score': 6,
+                'home_score': 2,
+                'status': 'Final',
+                'time_remaining': '',
+                'is_final': True,
+            },
+        ],
+        'nba': [
+            {
+                'sport': 'nba',
+                'away_team': {'abbreviation': 'BOS'},
+                'home_team': {'abbreviation': 'NYK'},
+                'away_score': 88,
+                'home_score': 91,
+                'status': '4th Quarter',
+                'time_remaining': '6:21',
+                'status_state': 'in',
+            }
+        ],
+        'nhl': [],
+    }
+
+
+def test_live_games_summary_counts_live_and_recent_finals():
+    fetcher = LiveSportsFetcher()
+    summary = fetcher.get_live_games_summary(_synthetic_live_games())
+
+    assert summary['total_games'] == 3
+    assert summary['total_live_games'] == 2
+    assert summary['total_finished_games'] == 1
+    assert summary['sports_with_games'] == 2
+    assert summary['sports_with_live_games'] == 2
+    assert summary['sports_with_finished_games'] == 1
+
+    assert summary['by_sport']['mlb']['count'] == 2
+    assert summary['by_sport']['mlb']['total'] == 2
+    assert summary['by_sport']['mlb']['live'] == 1
+    assert summary['by_sport']['mlb']['finished'] == 1
+    assert summary['by_sport']['nba']['sport_name'] == 'NBA'
+
+    assert len(summary['live_games_detail']) == 2
+    assert len(summary['finished_games_detail']) == 1
+    assert summary['finished_games_detail'][0]['status'] == 'Final'
+
+
+def run_live_fetcher_smoke():
     """Test the live sports fetcher."""
     print("====== Testing Live Sports Fetcher ======\n")
     
@@ -64,7 +127,7 @@ def test_live_fetcher():
         print("No live games found")
         return {}, {}
 
-def test_live_storage(live_games, summary):
+def run_live_storage_smoke(live_games, summary):
     """Test the live sports storage."""
     print(f"\n====== Testing Live Sports Storage ======\n")
     
@@ -98,7 +161,7 @@ def test_live_storage(live_games, summary):
     else:
         print(f"❌ Live games update test failed: {update_stats.get('error')}")
 
-def test_existing_data():
+def run_existing_data_smoke():
     """Test accessing existing data."""
     print(f"\n====== Testing Existing Data Access ======\n")
     
@@ -152,13 +215,13 @@ def main():
     
     try:
         # Test the fetcher
-        live_games, summary = test_live_fetcher()
+        live_games, summary = run_live_fetcher_smoke()
         
         # Test the storage
-        test_live_storage(live_games, summary)
+        run_live_storage_smoke(live_games, summary)
         
         # Test existing data access
-        test_existing_data()
+        run_existing_data_smoke()
         
         print(f"\n====== Test Complete: {datetime.now()} ======")
         
@@ -168,4 +231,4 @@ def main():
         traceback.print_exc()
 
 if __name__ == "__main__":
-    main() 
+    main()

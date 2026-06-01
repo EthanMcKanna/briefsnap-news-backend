@@ -71,6 +71,63 @@ LOW_VALUE_SOURCE_DOMAINS: tuple[str, ...] = (
     "accesswire.com",
 )
 
+LOW_VALUE_SOURCE_MARKERS: tuple[str, ...] = (
+    "business wire",
+    "ein presswire",
+    "globenewswire",
+    "pr newswire",
+    "prnewswire",
+    "accesswire",
+    "newsfile",
+)
+
+LOW_VALUE_URL_MARKERS: tuple[str, ...] = (
+    "/press-release/",
+    "/press-releases/",
+    "/press_release/",
+    "/press_releases/",
+    "/ein-presswire-",
+    "/business-wire/",
+    "/globenewswire/",
+)
+
+LOW_VALUE_TITLE_MARKERS: tuple[str, ...] = (
+    "announces pricing of",
+    "apparently over bluetooth",
+    "bluetooth device name",
+    "class action alert",
+    "doesn't matter that people hate",
+    "doesn’t matter that people hate",
+    "investor alert",
+    "pulls u-turn",
+    "reports first quarter fiscal",
+    "reports fiscal",
+    "to host conference call",
+    "why shares",
+)
+
+BOILERPLATE_COPY_MARKERS: tuple[str, ...] = (
+    "add ap news as your preferred source",
+    "advertisement",
+    "hide caption",
+    "is a senior editor and founding member",
+    "read more from",
+    "sign up for",
+    "subscribe to",
+    "toggle caption",
+)
+
+TOPIC_PRIORITY: tuple[str, ...] = (
+    "TOP_NEWS",
+    "WORLD",
+    "BUSINESS",
+    "TECHNOLOGY",
+    "HEALTH",
+    "SCIENCE",
+    "SPORTS",
+    "ENTERTAINMENT",
+)
+
 PRIMARY_SPORTS_DOMAINS: tuple[str, ...] = (
     "espn.com",
     "theathletic.com",
@@ -160,22 +217,36 @@ TOP_LEVEL_COPY_ENTITY_STOPWORDS: set[str] = {
     "us",
     "usa",
     "with",
+    "carries",
+    "impact",
+    "latest",
+    "public",
+    "readers",
+    "source",
+    "story",
+    "summary",
+    "top",
+    "verified",
 }
 
 MAX_ARTICLES_PER_DOMAIN = int(os.environ.get("BRIEFSNAP_MAX_ARTICLES_PER_DOMAIN", "3"))
 MAX_LEADING_STORIES_PER_DOMAIN = int(os.environ.get("BRIEFSNAP_MAX_LEADING_STORIES_PER_DOMAIN", "2"))
 MIN_LEADING_TRUSTED_STORIES = int(os.environ.get("BRIEFSNAP_MIN_LEADING_TRUSTED_STORIES", "4"))
 MIN_VISIBLE_STORY_TOPICS = int(os.environ.get("BRIEFSNAP_MIN_VISIBLE_STORY_TOPICS", "4"))
+MIN_V8_VISIBLE_STORY_TOPICS = int(os.environ.get("BRIEFSNAP_MIN_V8_VISIBLE_STORY_TOPICS", "7"))
 MIN_NORMALIZED_STORIES = int(os.environ.get("BRIEFSNAP_MIN_NORMALIZED_STORIES", "10"))
+MIN_V8_SOURCE_PACKET_COUNT = int(os.environ.get("BRIEFSNAP_MIN_V8_SOURCE_PACKET_COUNT", "26"))
+MIN_V8_SOURCE_PACKET_DOMAINS = int(os.environ.get("BRIEFSNAP_MIN_V8_SOURCE_PACKET_DOMAINS", "12"))
 MAX_STALE_LEADING_STORY_HOURS = int(os.environ.get("BRIEFSNAP_MAX_STALE_LEADING_STORY_HOURS", "72"))
 SOURCE_PACKET_TOPIC_MINIMUMS: dict[str, int] = {
-    "TOP_NEWS": 6,
-    "WORLD": 3,
-    "BUSINESS": 3,
-    "TECHNOLOGY": 3,
+    "TOP_NEWS": 8,
+    "WORLD": 4,
+    "BUSINESS": 4,
+    "TECHNOLOGY": 4,
     "HEALTH": 2,
     "SCIENCE": 2,
-    "SPORTS": 2,
+    "SPORTS": 3,
+    "ENTERTAINMENT": 1,
 }
 
 SPORT_SCORE_ENDPOINTS: tuple[tuple[str, str], ...] = (
@@ -760,9 +831,22 @@ class DailyBriefPipeline:
         )
         if any(domain.endswith(blocked) for blocked in LOW_VALUE_SOURCE_DOMAINS):
             return None
-        if self._is_low_value_title(title, topic.code):
+        candidate_topic = self._classify_candidate_topic(
+            topic_code=topic.code,
+            title=title,
+            source=source,
+            url=url,
+            description=description,
+        )
+        if self._is_low_value_candidate(
+            title=title,
+            topic_code=candidate_topic,
+            source=source,
+            url=url,
+            description=description,
+        ):
             return None
-        if topic.code == "SPORTS" and not self._is_high_signal_sports_candidate(
+        if candidate_topic == "SPORTS" and not self._is_high_signal_sports_candidate(
             title=title,
             source=source or domain,
             url=url,
@@ -770,10 +854,10 @@ class DailyBriefPipeline:
         ):
             return None
 
-        stable = hashlib.sha1(f"{topic.code}:{url}".encode("utf-8")).hexdigest()[:16]
+        stable = hashlib.sha1(f"{candidate_topic}:{url}".encode("utf-8")).hexdigest()[:16]
         return ArticleCandidate(
             id=stable,
-            topic=topic.code,
+            topic=candidate_topic,
             title=title,
             source=source or self._domain_name(url),
             url=url,
@@ -809,14 +893,41 @@ class DailyBriefPipeline:
         return enriched
 
     def _should_keep_thin_candidate(self, candidate: ArticleCandidate) -> bool:
-        if self._normalize_topic(candidate.topic) != "SPORTS":
-            return False
-        return self._is_high_signal_sports_candidate(
+        if self._is_low_value_candidate(
             title=candidate.title,
+            topic_code=candidate.topic,
             source=candidate.source,
             url=candidate.url,
             description=candidate.description or candidate.content[:400],
+        ):
+            return False
+        if self._normalize_topic(candidate.topic) == "SPORTS":
+            return self._is_high_signal_sports_candidate(
+                title=candidate.title,
+                source=candidate.source,
+                url=candidate.url,
+                description=candidate.description or candidate.content[:400],
+            )
+        domain = self._domain_name(candidate.url)
+        if self._is_trusted_domain(domain):
+            return True
+        trusted_source_names = (
+            "ap news",
+            "associated press",
+            "bbc",
+            "bloomberg",
+            "cbs news",
+            "cnbc",
+            "cnn",
+            "npr",
+            "reuters",
+            "the guardian",
+            "the new york times",
+            "the verge",
+            "washington post",
+            "wsj",
         )
+        return any(source in candidate.source.lower() for source in trusted_source_names)
 
     def _scrape_candidate(self, candidate: ArticleCandidate) -> ArticleCandidate:
         if "news.google.com" in candidate.url:
@@ -1069,6 +1180,7 @@ Sports score packet:
 
         self._ensure_sports_news_stories(normalized_stories, articles, story_ids)
         self._ensure_topic_breadth_stories(normalized_stories, articles, story_ids)
+        normalized_stories = self._rebalance_story_order(normalized_stories, articles)
 
         now = datetime.now(timezone.utc)
         sections = self._normalize_sections(payload.get("sections", []), normalized_stories, articles)
@@ -1116,7 +1228,9 @@ Sports score packet:
         if not summary:
             summary = self._clean_description(article.description or "", title=title, source=source)
         if not summary:
-            summary = _clean_text(article.content[:260]) or title
+            summary = self._clean_description(article.content[:500], title=title, source=source)
+        if not summary:
+            summary = title
 
         topic = article.topic
         if self._normalize_topic(topic) != "SPORTS":
@@ -1278,7 +1392,10 @@ Sports score packet:
         if not supported_topics:
             return
 
-        target_topic_count = min(max(MIN_VISIBLE_STORY_TOPICS, 5), len(supported_topics))
+        target_topic_count = min(
+            max(MIN_VISIBLE_STORY_TOPICS, MIN_V8_VISIBLE_STORY_TOPICS),
+            len(supported_topics),
+        )
         visible_topics = {
             self._normalize_topic(story.get("topic"))
             for story in stories[:18]
@@ -1312,6 +1429,23 @@ Sports score packet:
             stories.append(self._normalized_story_from_article(article))
             visible_topics.add(topic)
 
+        for topic in ("HEALTH", "SCIENCE"):
+            if topic not in supported_topics or topic in visible_topics:
+                continue
+            article = next(
+                (
+                    candidate
+                    for candidate in topic_groups.get(topic, [])
+                    if candidate.id not in story_ids
+                ),
+                None,
+            )
+            if not article:
+                continue
+            story_ids.add(article.id)
+            stories.append(self._normalized_story_from_article(article))
+            visible_topics.add(topic)
+
         target_story_count = min(max(MIN_NORMALIZED_STORIES, target_topic_count + 3), len(articles), 18)
         if len(stories) >= target_story_count:
             return
@@ -1332,11 +1466,126 @@ Sports score packet:
             story_ids.add(article.id)
             stories.append(self._normalized_story_from_article(article))
 
+    def _rebalance_story_order(
+        self,
+        stories: list[dict[str, Any]],
+        articles: list[ArticleCandidate],
+    ) -> list[dict[str, Any]]:
+        if len(stories) < 4:
+            return self._dedupe_story_list(stories)
+
+        article_by_id = {article.id: article for article in articles}
+        remaining = list(stories)
+        ordered: list[dict[str, Any]] = []
+        topic_counts: Counter[str] = Counter()
+        domain_counts: Counter[str] = Counter()
+
+        def story_rank(story: dict[str, Any]) -> tuple[float, int]:
+            article = article_by_id.get(str(story.get("id") or ""))
+            score = article.score if article else 0
+            topic = self._normalize_topic(story.get("topic"))
+            topic_priority = TOPIC_PRIORITY.index(topic) if topic in TOPIC_PRIORITY else len(TOPIC_PRIORITY)
+            return (score, -topic_priority)
+
+        def can_take(story: dict[str, Any], *, relaxed: bool = False) -> bool:
+            topic = self._normalize_topic(story.get("topic"))
+            domain = self._domain_name(str(story.get("url") or ""))
+            first_eight = len(ordered) < 8
+            if first_eight and not relaxed:
+                topic_cap = 3 if topic == "TOP_NEWS" else 2
+                if topic_counts[topic] >= topic_cap:
+                    return False
+                if domain and domain_counts[domain] >= 2:
+                    return False
+            return True
+
+        def take_best(topic: str | None = None, *, relaxed: bool = False) -> bool:
+            candidates = [
+                story
+                for story in remaining
+                if (topic is None or self._normalize_topic(story.get("topic")) == topic)
+                and can_take(story, relaxed=relaxed)
+            ]
+            if not candidates:
+                return False
+            best = max(candidates, key=story_rank)
+            remaining.remove(best)
+            ordered.append(best)
+            topic_counts[self._normalize_topic(best.get("topic"))] += 1
+            domain = self._domain_name(str(best.get("url") or ""))
+            if domain:
+                domain_counts[domain] += 1
+            return True
+
+        take_best("TOP_NEWS", relaxed=True)
+
+        for topic in TOPIC_PRIORITY:
+            if len(ordered) >= 8:
+                break
+            if topic_counts[topic]:
+                continue
+            take_best(topic)
+
+        while remaining and len(ordered) < min(8, len(stories)):
+            if not take_best():
+                if not take_best(relaxed=True):
+                    break
+
+        ordered.extend(remaining)
+        return self._dedupe_story_list(ordered)
+
+    @classmethod
+    def _dedupe_story_list(cls, stories: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        deduped: list[dict[str, Any]] = []
+        for story in stories:
+            if any(cls._stories_are_near_duplicates(story, existing) for existing in deduped):
+                continue
+            deduped.append(story)
+        return deduped
+
+    @classmethod
+    def _stories_are_near_duplicates(cls, left: dict[str, Any], right: dict[str, Any]) -> bool:
+        left_tokens = cls._story_title_tokens(left)
+        right_tokens = cls._story_title_tokens(right)
+        if not left_tokens or not right_tokens:
+            return False
+        common_tokens = left_tokens & right_tokens
+        if len(common_tokens) >= 4:
+            return True
+
+        left_bigrams = cls._story_title_bigrams(left)
+        right_bigrams = cls._story_title_bigrams(right)
+        if left_bigrams & right_bigrams and len(common_tokens) >= 3:
+            return True
+        return False
+
+    @staticmethod
+    def _story_title_tokens(story: dict[str, Any]) -> set[str]:
+        title = str(story.get("title") or "").lower()
+        tokens = {
+            token
+            for token in re.findall(r"[a-z0-9']+", title)
+            if len(token) > 2 and token not in TOP_LEVEL_COPY_ENTITY_STOPWORDS
+        }
+        return tokens
+
+    @staticmethod
+    def _story_title_bigrams(story: dict[str, Any]) -> set[tuple[str, str]]:
+        title = str(story.get("title") or "").lower()
+        tokens = [
+            token
+            for token in re.findall(r"[a-z0-9']+", title)
+            if len(token) > 2 and token not in TOP_LEVEL_COPY_ENTITY_STOPWORDS
+        ]
+        return set(zip(tokens, tokens[1:]))
+
     @staticmethod
     def _minimum_sources_for_topic(topic: str) -> int:
         normalized = DailyBriefPipeline._normalize_topic(topic)
         if normalized == "TOP_NEWS":
             return 3
+        if normalized in {"WORLD", "HEALTH", "SCIENCE", "ENTERTAINMENT"}:
+            return 1
         return 2
 
     def _fallback_brief(self, articles: list[ArticleCandidate], model_used: str) -> dict[str, Any]:
@@ -1348,6 +1597,8 @@ Sports score packet:
             story_ids.add(article.id)
             stories.append(self._normalized_story_from_article(article))
         self._ensure_sports_news_stories(stories, articles, story_ids)
+        self._ensure_topic_breadth_stories(stories, articles, story_ids)
+        stories = self._rebalance_story_order(stories, articles)
         score_cards = self.sports_score_cards[:6]
         headline, dek, summary, quick_hits = self._grounded_top_level_copy(payload={}, stories=stories)
         sections = self._normalize_sections([], stories, articles)
@@ -1489,6 +1740,12 @@ Sports score packet:
                 story_ids = self._story_ids_for_topic(topic, stories, limit=4)
                 if topic == "SPORTS":
                     story_ids = self._filter_sports_story_ids(story_ids, stories)
+            elif topic == "TOP_NEWS" and len(story_ids) < 2:
+                for story_id in self._story_ids_for_topic(topic, stories, limit=4):
+                    if story_id not in story_ids:
+                        story_ids.append(story_id)
+                    if len(story_ids) >= 2:
+                        break
             if not story_ids and not (topic == "SPORTS" and self.sports_score_cards):
                 continue
             cleaned = dict(section)
@@ -1680,6 +1937,9 @@ Sports score packet:
     def _is_unpolished_copy(text: Any) -> bool:
         cleaned = _clean_text(text)
         if not cleaned:
+            return True
+        lowered = cleaned.lower()
+        if any(marker in lowered for marker in BOILERPLATE_COPY_MARKERS):
             return True
         if DailyBriefPipeline._has_visible_truncation(cleaned):
             return True
@@ -2072,6 +2332,13 @@ Sports score packet:
         }
         if len(normalized_titles) < min(6, len(stories)):
             issues.append("stories are not distinct enough")
+        for index, story in enumerate(stories):
+            if any(
+                self._stories_are_near_duplicates(story, prior)
+                for prior in stories[:index]
+            ):
+                issues.append("stories include near-duplicate coverage")
+                break
 
         story_domains: list[str] = []
         story_image_count = 0
@@ -2106,6 +2373,17 @@ Sports score packet:
                     ),
                 ):
                     issues.append(f"sports story {story_id} failed sports relevance gate")
+            elif self._is_low_value_candidate(
+                title=str(story.get("title") or ""),
+                topic_code=str(story.get("topic") or ""),
+                source=str(story.get("source") or ""),
+                url=url,
+                description=" ".join(
+                    str(story.get(key) or "")
+                    for key in ("summary", "why_it_matters")
+                ),
+            ):
+                issues.append(f"story {story_id} failed editorial value gate")
             if any(
                 "&nbsp;" in str(story.get(key) or "") or "\xa0" in str(story.get(key) or "")
                 for key in ("title", "summary", "why_it_matters")
@@ -2156,11 +2434,78 @@ Sports score packet:
         visible_topics.discard("")
         if len(stories) >= 6 and len(visible_topics) < MIN_VISIBLE_STORY_TOPICS:
             issues.append("visible stories need broader topic coverage")
+
+        coverage = brief.get("coverage_report") if isinstance(brief.get("coverage_report"), dict) else {}
+        if coverage:
+            source_packet_count = int(coverage.get("source_packet_count") or brief.get("source_count") or 0)
+            source_packet_domains = int(coverage.get("source_packet_domains") or 0)
+            if source_packet_count < MIN_V8_SOURCE_PACKET_COUNT:
+                issues.append(
+                    f"source packet is too thin for V8 coverage: {source_packet_count}"
+                )
+            if source_packet_domains < MIN_V8_SOURCE_PACKET_DOMAINS:
+                issues.append(
+                    f"source packet needs broader domain coverage: {source_packet_domains}"
+                )
+
+            source_topic_counts = {
+                self._normalize_topic(topic): int(count or 0)
+                for topic, count in (coverage.get("topic_counts") or {}).items()
+            }
+            supported_topics = [
+                topic
+                for topic in TOPIC_PRIORITY
+                if source_topic_counts.get(topic, 0) >= self._minimum_sources_for_topic(topic)
+            ]
+            visible_supported_topics = [
+                topic for topic in supported_topics if topic in visible_topics
+            ]
+            target_supported_topics = min(MIN_V8_VISIBLE_STORY_TOPICS, len(supported_topics))
+            if (
+                target_supported_topics
+                and len(visible_supported_topics) < target_supported_topics
+            ):
+                missing_topics = [
+                    topic for topic in supported_topics if topic not in visible_topics
+                ][:4]
+                issues.append(
+                    "visible stories miss source-supported coverage lanes: "
+                    + ", ".join(missing_topics)
+                )
+            if (
+                (source_topic_counts.get("HEALTH", 0) or source_topic_counts.get("SCIENCE", 0))
+                and not ({"HEALTH", "SCIENCE"} & visible_topics)
+            ):
+                issues.append("visible stories need at least one health or science item when supported")
+            for required_topic in ("HEALTH", "SCIENCE"):
+                if (
+                    source_topic_counts.get(required_topic, 0) >= self._minimum_sources_for_topic(required_topic)
+                    and required_topic not in visible_topics
+                ):
+                    issues.append(
+                        "visible stories need a "
+                        + required_topic.lower()
+                        + " item when source-supported"
+                    )
+
         if stories[:3] and not any(
             self._normalize_topic(story.get("topic")) == "TOP_NEWS"
             for story in stories[:3]
         ):
             issues.append("one of the first three stories must be TOP_NEWS")
+
+        leading_topic_counts = Counter(
+            self._normalize_topic(story.get("topic"))
+            for story in stories[: min(8, len(stories))]
+            if story.get("topic")
+        )
+        crowded_topics = [
+            topic
+            for topic, count in leading_topic_counts.items()
+            if topic != "TOP_NEWS" and count > 2
+        ]
+        if crowded_topics:
+            issues.append("leading stories overrepresent a topic: " + ", ".join(sorted(crowded_topics)))
 
         leading_ages = [
             age
@@ -2907,7 +3252,11 @@ Generated at: {generated_at}
         if cleaned_source and text.lower().startswith(cleaned_source.lower()):
             text = text[len(cleaned_source):].strip(" -|.;:")
 
-        return _clean_text(text)
+        cleaned = _clean_text(text)
+        lowered = cleaned.lower()
+        if any(marker in lowered for marker in BOILERPLATE_COPY_MARKERS):
+            return ""
+        return cleaned
 
     @staticmethod
     def _same_title_fragment(left: Any, right: Any) -> bool:
@@ -3065,6 +3414,190 @@ Generated at: {generated_at}
         ):
             return True
         return False
+
+    @classmethod
+    def _is_low_value_candidate(
+        cls,
+        *,
+        title: str,
+        topic_code: str,
+        source: str = "",
+        url: str = "",
+        description: str = "",
+    ) -> bool:
+        lowered_title = title.lower()
+        lowered_source = source.lower()
+        lowered_url = url.lower()
+        text = f"{lowered_title} {lowered_source} {description.lower()}"
+        domain = cls._domain_name(url)
+
+        if cls._is_low_value_title(title, topic_code):
+            return True
+        if any(domain.endswith(blocked) for blocked in LOW_VALUE_SOURCE_DOMAINS):
+            return True
+        if any(marker in lowered_source for marker in LOW_VALUE_SOURCE_MARKERS):
+            return True
+        if any(marker in lowered_url for marker in LOW_VALUE_URL_MARKERS):
+            return True
+        if "press release" in text:
+            return True
+        if any(marker in lowered_title for marker in LOW_VALUE_TITLE_MARKERS):
+            return True
+
+        normalized_topic = cls._normalize_topic(topic_code)
+        if normalized_topic == "TECHNOLOGY" and any(
+            marker in lowered_title
+            for marker in (
+                "i put ",
+                "hands-on:",
+                "review:",
+                "actually pretty useful",
+                "huge sales hit",
+                "this is the ",
+            )
+        ):
+            return True
+        if normalized_topic == "TECHNOLOGY" and (
+            lowered_url.rstrip("/").endswith("/pictures")
+            or "/pictures" in lowered_url
+            or "/gallery" in lowered_url
+        ):
+            return True
+        if normalized_topic == "BUSINESS" and (
+            "techcrunch mobility:" in lowered_title
+            or ("here are the" in lowered_title and "we're watching" in lowered_title)
+            or ("here are the" in lowered_title and "we are watching" in lowered_title)
+        ):
+            return True
+        if normalized_topic in {"BUSINESS", "TOP_NEWS"} and any(
+            marker in lowered_title
+            for marker in (
+                "unruly passenger",
+                "longest-serving flight attendant",
+                "flight attendant prepares to retire",
+                "pulls u-turn",
+                "bluetooth device name",
+            )
+        ):
+            return True
+        if normalized_topic == "TOP_NEWS" and any(
+            marker in lowered_title
+            for marker in (
+                "extramarital",
+                "wife says",
+                "wedding. bus driver charged",
+                "two biggest movies",
+                "directed by youtubers",
+            )
+        ):
+            return True
+        if normalized_topic == "SPORTS" and (
+            "/video/clip/" in lowered_url
+            or "preview?gameid=" in lowered_url
+            or any(
+                marker in lowered_title
+                for marker in (
+                    "takes on ",
+                    "seeks ",
+                    "why stephen a.",
+                    "trophy image",
+                    "script logo",
+                    "finals courts",
+                    "court design",
+                )
+            )
+        ):
+            return True
+        return False
+
+    @classmethod
+    def _classify_candidate_topic(
+        cls,
+        *,
+        topic_code: str,
+        title: str,
+        source: str,
+        url: str,
+        description: str = "",
+    ) -> str:
+        normalized_topic = cls._normalize_topic(topic_code)
+        if normalized_topic != "TOP_NEWS":
+            return normalized_topic
+
+        lowered_url = url.lower()
+        text = f"{title} {source} {description} {lowered_url}".lower()
+        path = urlparse(url).path.lower()
+
+        if cls._is_high_signal_sports_candidate(
+            title=title,
+            source=source,
+            url=url,
+            description=description,
+        ):
+            return "SPORTS"
+        if any(marker in path for marker in ("/technology/", "/tech/", "/ai-", "/cyber")) or cls._contains_any_term(
+            text,
+            (
+                "ai",
+                "chip",
+                "chips",
+                "nvidia",
+                "software",
+                "startup",
+                "cybersecurity",
+                "windows pc",
+                "data centre",
+                "data center",
+            ),
+        ):
+            return "TECHNOLOGY"
+        if any(marker in path for marker in ("/business/", "/finance/", "/markets/", "/economy/")) or cls._contains_any_term(
+            text,
+            (
+                "market",
+                "markets",
+                "stocks",
+                "earnings",
+                "inflation",
+                "tariff",
+                "oil",
+                "merger",
+                "antitrust",
+                "bank",
+            ),
+        ):
+            return "BUSINESS"
+        if any(marker in path for marker in ("/world/", "/middle-east/", "/europe/", "/asia/")) or cls._contains_any_term(
+            text,
+            (
+                "china",
+                "europe",
+                "gaza",
+                "iran",
+                "israel",
+                "japan",
+                "nato",
+                "russia",
+                "ukraine",
+            ),
+        ):
+            return "WORLD"
+        if any(marker in path for marker in ("/health/", "/medicine/")) or cls._contains_any_term(
+            text,
+            ("cdc", "fda", "health", "hospital", "medicine", "virus", "vaccine"),
+        ):
+            return "HEALTH"
+        if any(marker in path for marker in ("/science/", "/space/", "/climate/")) or cls._contains_any_term(
+            text,
+            ("climate", "meteor", "nasa", "research", "science", "space"),
+        ):
+            return "SCIENCE"
+        if any(marker in path for marker in ("/culture/", "/entertainment/", "/style/")) or cls._contains_any_term(
+            text,
+            ("box office", "film", "movie", "movies", "music", "television", "youtubers"),
+        ):
+            return "ENTERTAINMENT"
+        return normalized_topic
 
     @staticmethod
     def _dedupe(candidates: list[ArticleCandidate]) -> list[ArticleCandidate]:

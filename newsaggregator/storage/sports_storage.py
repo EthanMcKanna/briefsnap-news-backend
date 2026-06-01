@@ -909,7 +909,7 @@ class SportsStorage:
     def archive_stale_final_scores(
         cls,
         now: Optional[datetime] = None,
-        max_age_hours: int = 6,
+        max_age_hours: float = 6,
         batch_size: int = 500,
     ) -> int:
         """Hide final scores once they are no longer fresh enough for score rails."""

@@ -3,7 +3,7 @@
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
-from newsaggregator.briefs.pipeline import ArticleCandidate, DailyBriefPipeline, PipelineOptions
+from newsaggregator.briefs.pipeline import ArticleCandidate, DailyBriefPipeline, PipelineOptions, TOPICS
 from newsaggregator.fetchers.article_fetcher import ArticleFetcher
 
 
@@ -801,6 +801,29 @@ def test_normalize_brief_repairs_clipped_visible_copy():
     assert "visible truncation" not in " ".join(pipeline._brief_quality_issues(brief))
 
 
+def test_story_normalization_drops_scraped_source_boilerplate():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    article = ArticleCandidate(
+        id="ap-boilerplate",
+        topic="WORLD",
+        title="Malaysia enforces ban on social media accounts for children younger than 16",
+        source="AP News",
+        url="https://apnews.com/article/malaysia-social-media-ban-16",
+        description="Add AP News as your preferred source to see more of our stories on Google.",
+        content="Add AP News as your preferred source to see more of our stories on Google.",
+    )
+
+    story = pipeline._normalized_story_from_article(article)
+
+    assert story["summary"] == article.title
+    assert not DailyBriefPipeline._is_unpolished_copy(story["summary"])
+    assert DailyBriefPipeline._clean_description(
+        "Trump floats MAGA rally instead of concert toggle caption Alex Brandon/AP",
+        title="Trump floats MAGA rally instead of concert",
+        source="NPR",
+    ) == ""
+
+
 def test_quality_gate_rejects_unsupported_top_level_named_entities():
     pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
     brief = valid_quality_brief()
@@ -1021,6 +1044,29 @@ def test_normalize_sections_drops_invalid_non_sports_sections():
 
     assert [section["topic"] for section in sections] == ["TOP_NEWS"]
     assert sections[0]["story_ids"] == ["story-1", "story-2"]
+
+
+def test_sanitize_sections_augments_thin_top_news_references():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    stories = valid_quality_brief()["stories"]
+
+    sections = pipeline._sanitize_sections(
+        [
+            {
+                "topic": "TOP_NEWS",
+                "title": "Top News",
+                "summary": "The top items.",
+                "why_it_matters": "They matter.",
+                "story_ids": ["story-1"],
+            }
+        ],
+        stories,
+    )
+
+    assert sections[0]["story_ids"][:2] == ["story-1", "story-2"]
+    brief = valid_quality_brief()
+    brief["sections"] = sections
+    assert "TOP_NEWS section needs at least two real story references" not in pipeline._brief_quality_issues(brief)
 
 
 def test_quality_gate_rejects_sports_story_drift():
@@ -1266,6 +1312,246 @@ def test_archive_stale_firestore_scores_uses_sports_storage_cleanup():
         assert DailyBriefPipeline._archive_stale_firestore_scores() == 3
 
     archive.assert_called_once_with()
+
+
+def test_press_release_candidates_are_rejected_before_story_selection():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+
+    candidate = pipeline._candidate_from_raw(
+        {
+            "title": "Legal Tech Startup Automates 70% of Contract Review Workload",
+            "url": (
+                "https://apnews.com/press-release/ein-presswire-newsmatics/"
+                "legal-tech-startup-automates-contract-review"
+            ),
+            "source": "Associated Press",
+            "description": "EIN Presswire press release distributed through AP.",
+        },
+        next(topic for topic in TOPICS if topic.code == "TECHNOLOGY"),
+    )
+
+    assert candidate is None
+
+
+def test_low_density_filler_candidates_are_rejected_before_story_selection():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    topic_by_code = {topic.code: topic for topic in TOPICS}
+
+    cases = [
+        (
+            {
+                "title": "This is the Microsoft Surface Laptop Ultra with Nvidia RTX Spark",
+                "url": "https://www.theverge.com/tech/940584/microsoft-surface-laptop-ultra-pictures",
+                "source": "The Verge",
+                "description": "A first-look photo post about a device shell.",
+            },
+            "TOP_NEWS",
+        ),
+        (
+            {
+                "title": "NBA brings back trophy image, script logo for Finals courts",
+                "url": "https://www.espn.com/nba/story/_/id/48935292/nba-finals-courts",
+                "source": "ESPN",
+                "description": "A visual-branding note about the court design.",
+            },
+            "SPORTS",
+        ),
+        (
+            {
+                "title": "United Airlines flight to Spain pulls U-turn, apparently over Bluetooth device name",
+                "url": "https://www.npr.org/2026/05/31/nx-s1-5841913/united-airlines-flight-diversion-bluetooth",
+                "source": "NPR",
+                "description": "A strange-flight item without durable business importance.",
+            },
+            "BUSINESS",
+        ),
+    ]
+
+    for raw_item, topic_code in cases:
+        assert pipeline._candidate_from_raw(raw_item, topic_by_code[topic_code]) is None
+
+
+def test_title_only_trusted_reporting_stays_in_source_packet():
+    candidate = ArticleCandidate(
+        id="reuters-title-only",
+        topic="WORLD",
+        title="European leaders agree on new defense financing",
+        source="Reuters",
+        url="https://www.reuters.com/world/europe/defense-financing-2026-05-31/",
+    )
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+
+    assert pipeline._should_keep_thin_candidate(candidate)
+
+
+def test_top_news_candidates_are_reclassified_into_real_editorial_lanes():
+    top_news = next(topic for topic in TOPICS if topic.code == "TOP_NEWS")
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+
+    technology = pipeline._candidate_from_raw(
+        {
+            "title": "First Windows PC powered by Nvidia chips to debut next week",
+            "url": "https://www.reuters.com/business/first-windows-pc-powered-by-nvidia-chips-2026-05-30/",
+            "source": "Reuters",
+            "description": "Nvidia chips are moving into a new Windows PC line.",
+        },
+        top_news,
+    )
+    world = pipeline._candidate_from_raw(
+        {
+            "title": "Japan seeks candid dialog, defense minister says",
+            "url": "https://www.cnbc.com/2026/05/31/japan-defense-minister.html",
+            "source": "CNBC",
+            "description": "Japan's defense minister addressed regional security concerns.",
+        },
+        top_news,
+    )
+
+    assert technology is not None
+    assert technology.topic == "TECHNOLOGY"
+    assert world is not None
+    assert world.topic == "WORLD"
+
+
+def test_quality_gate_requires_supported_topic_breadth():
+    brief = valid_quality_brief()
+    brief["coverage_report"] = {
+        "source_packet_count": 36,
+        "source_packet_domains": 14,
+        "topic_counts": {
+            "TOP_NEWS": 8,
+            "WORLD": 4,
+            "BUSINESS": 4,
+            "TECHNOLOGY": 4,
+            "HEALTH": 2,
+            "SCIENCE": 2,
+            "SPORTS": 3,
+        },
+    }
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+
+    issues = pipeline._brief_quality_issues(brief)
+
+    assert any("visible stories miss source-supported coverage lanes" in issue for issue in issues)
+
+
+def test_quality_gate_requires_science_when_source_supported():
+    brief = valid_quality_brief()
+    brief["stories"].append(
+        {
+            "id": "story-7",
+            "topic": "HEALTH",
+            "title": "Hospitals prepare for summer virus uptick",
+            "summary": "Health systems are preparing staffing plans as seasonal indicators rise.",
+            "why_it_matters": "The preparations can affect local care access.",
+            "source": "STAT",
+            "url": "https://www.statnews.com/2026/05/31/summer-virus-hospitals",
+        }
+    )
+    brief["coverage_report"] = {
+        "source_packet_count": 30,
+        "source_packet_domains": 14,
+        "topic_counts": {
+            "TOP_NEWS": 8,
+            "WORLD": 4,
+            "BUSINESS": 4,
+            "TECHNOLOGY": 4,
+            "HEALTH": 2,
+            "SCIENCE": 2,
+            "SPORTS": 3,
+        },
+    }
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+
+    issues = pipeline._brief_quality_issues(brief)
+
+    assert any("science item when source-supported" in issue for issue in issues)
+
+
+def test_quality_gate_rejects_press_release_story_values():
+    brief = valid_quality_brief()
+    brief["stories"][2] = {
+        **brief["stories"][2],
+        "title": "UiPath Reports First Quarter Fiscal 2027 Financial Results",
+        "source": "AP News",
+        "url": "https://apnews.com/press-release/business-wire/uipath-reports-results",
+    }
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+
+    issues = pipeline._brief_quality_issues(brief)
+
+    assert any("failed editorial value gate" in issue for issue in issues)
+
+
+def test_story_rebalancing_prevents_sports_from_crowding_the_lead():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    articles = [
+        ArticleCandidate(
+            id=f"story-{index}",
+            topic=topic,
+            title=f"{topic} story {index}",
+            source=source,
+            url=url,
+            score=score,
+        )
+        for index, (topic, source, url, score) in enumerate(
+            [
+                ("SPORTS", "ESPN", "https://www.espn.com/nba/story/1", 30),
+                ("SPORTS", "ESPN", "https://www.espn.com/nba/story/2", 29),
+                ("SPORTS", "ESPN", "https://www.espn.com/nba/story/3", 28),
+                ("TOP_NEWS", "Reuters", "https://www.reuters.com/world/us/story", 18),
+                ("WORLD", "BBC", "https://www.bbc.com/news/world", 17),
+                ("BUSINESS", "CNBC", "https://www.cnbc.com/business", 16),
+                ("TECHNOLOGY", "The Verge", "https://www.theverge.com/tech", 15),
+                ("HEALTH", "STAT", "https://www.statnews.com/health", 14),
+                ("ENTERTAINMENT", "Variety", "https://variety.com/culture", 13),
+            ],
+            start=1,
+        )
+    ]
+    stories = [pipeline._normalized_story_from_article(article) for article in articles]
+
+    rebalanced = pipeline._rebalance_story_order(stories, articles)
+
+    assert rebalanced[0]["topic"] == "TOP_NEWS"
+    assert sum(1 for story in rebalanced[:8] if story["topic"] == "SPORTS") <= 2
+
+
+def test_story_rebalancing_removes_near_duplicate_story_slots():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    articles = [
+        ArticleCandidate(
+            id="kennedy-1",
+            topic="TOP_NEWS",
+            title="Trump's Kennedy Center plans were blocked by a judge",
+            source="Washington Post",
+            url="https://www.washingtonpost.com/style/kennedy-center",
+            score=20,
+        ),
+        ArticleCandidate(
+            id="kennedy-2",
+            topic="TOP_NEWS",
+            title="Judge orders president's name off Kennedy Center",
+            source="The New York Times",
+            url="https://www.nytimes.com/live/trump-news",
+            score=19,
+        ),
+        ArticleCandidate(
+            id="world-1",
+            topic="WORLD",
+            title="Japan defense minister urges candid regional dialogue",
+            source="CNBC",
+            url="https://www.cnbc.com/japan-defense",
+            score=18,
+        ),
+    ]
+    stories = [pipeline._normalized_story_from_article(article) for article in articles]
+
+    rebalanced = pipeline._rebalance_story_order(stories, articles)
+
+    titles = [story["title"] for story in rebalanced]
+    assert "Trump's Kennedy Center plans were blocked by a judge" in titles
+    assert "Judge orders president's name off Kennedy Center" not in titles
 
 
 def test_image_url_filter_accepts_validated_cdn_image_shapes():

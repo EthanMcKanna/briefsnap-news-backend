@@ -307,6 +307,17 @@ class LiveSportsFetcher:
         print(f"Total live games found across all sports: {total_live_games}")
         return all_live_games
     
+    @staticmethod
+    def _is_final_game(game: Dict) -> bool:
+        """Return True when a fetched game is complete."""
+        status = str(game.get('status', '')).strip()
+        status_state = str(game.get('status_state', '')).strip().lower()
+        return (
+            bool(game.get('is_final'))
+            or status in {'Final', 'Final/OT', 'Final/SO', 'Completed'}
+            or status_state == 'post'
+        )
+
     def get_live_games_summary(self, all_live_games: Dict[str, List[Dict]]) -> Dict:
         """Generate a summary of all live and recently finished games.
         
@@ -322,19 +333,31 @@ class LiveSportsFetcher:
         live_count = 0
         finished_count = 0
         
+        sports_with_live_games = 0
+        sports_with_finished_games = 0
+
         for games in all_live_games.values():
+            sport_live = 0
+            sport_finished = 0
             for game in games:
-                status = game.get('status', '')
-                if status in ['Final', 'Final/OT', 'Final/SO', 'Completed']:
+                if self._is_final_game(game):
                     finished_count += 1
+                    sport_finished += 1
                 else:
                     live_count += 1
+                    sport_live += 1
+            if sport_live:
+                sports_with_live_games += 1
+            if sport_finished:
+                sports_with_finished_games += 1
         
         summary = {
             'total_games': total_games,
             'total_live_games': live_count,
             'total_finished_games': finished_count,
             'sports_with_games': len([sport for sport, games in all_live_games.items() if games]),
+            'sports_with_live_games': sports_with_live_games,
+            'sports_with_finished_games': sports_with_finished_games,
             'last_updated': datetime.now().isoformat(),
             'by_sport': {},
             'live_games_detail': [],
@@ -359,7 +382,7 @@ class LiveSportsFetcher:
                         'time_remaining': game.get('time_remaining', ''),
                     }
                     
-                    if game.get('is_final') or status in ['Final', 'Final/OT', 'Final/SO', 'Completed']:
+                    if self._is_final_game(game):
                         sport_finished += 1
                         summary['finished_games_detail'].append(game_detail)
                     else:
@@ -367,6 +390,7 @@ class LiveSportsFetcher:
                         summary['live_games_detail'].append(game_detail)
                 
                 summary['by_sport'][sport] = {
+                    'count': len(games),
                     'total': len(games),
                     'live': sport_live,
                     'finished': sport_finished,
