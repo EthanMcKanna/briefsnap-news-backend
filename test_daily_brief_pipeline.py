@@ -1383,6 +1383,42 @@ def test_low_density_filler_candidates_are_rejected_before_story_selection():
             },
             "HEALTH",
         ),
+        (
+            {
+                "title": "Opinion | The president's health is the people's business",
+                "url": "https://www.washingtonpost.com/opinions/2026/05/31/president-health-public/",
+                "source": "The Washington Post",
+                "description": "An opinion column about politics and public disclosure.",
+            },
+            "HEALTH",
+        ),
+        (
+            {
+                "title": "The hummingbird-red flower connection, with Harvard's Patrick McKenzie",
+                "url": "https://awaytogarden.com/hummingbird-red-flower-connection/",
+                "source": "A Way To Garden",
+                "description": "A gardening interview that should not stand in for daily science news.",
+            },
+            "SCIENCE",
+        ),
+        (
+            {
+                "title": "007 First Light is already discounted for the PS5 and Steam",
+                "url": "https://www.theverge.com/deals/2026/05/31/007-first-light-discount",
+                "source": "The Verge",
+                "description": "A shopping deal post rather than consequential technology news.",
+            },
+            "TECHNOLOGY",
+        ),
+        (
+            {
+                "title": "Platner's wife told campaign about sexually explicit texts he sent other women",
+                "url": "https://www.cbsnews.com/news/platner-wife-campaign-texts/",
+                "source": "CBS News",
+                "description": "A domestic campaign-scandal item surfaced in the wrong section.",
+            },
+            "WORLD",
+        ),
     ]
 
     for raw_item, topic_code in cases:
@@ -1424,11 +1460,22 @@ def test_top_news_candidates_are_reclassified_into_real_editorial_lanes():
         },
         top_news,
     )
+    business = pipeline._candidate_from_raw(
+        {
+            "title": "UAW to strike at key General Motors truck supplier plant",
+            "url": "https://www.wsj.com/business/autos/uaw-general-motors-truck-supplier-strike",
+            "source": "The Wall Street Journal",
+            "description": "The labor action could disrupt General Motors truck production.",
+        },
+        top_news,
+    )
 
     assert technology is not None
     assert technology.topic == "TECHNOLOGY"
     assert world is not None
     assert world.topic == "WORLD"
+    assert business is not None
+    assert business.topic == "BUSINESS"
 
 
 def test_quality_gate_requires_supported_topic_breadth():

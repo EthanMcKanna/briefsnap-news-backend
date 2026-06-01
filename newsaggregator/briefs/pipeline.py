@@ -54,7 +54,9 @@ TRUSTED_SOURCE_DOMAINS: dict[str, int] = {
     "cnbc.com": 7,
     "axios.com": 7,
     "politico.com": 7,
+    "arstechnica.com": 7,
     "theguardian.com": 7,
+    "nasa.gov": 7,
     "statnews.com": 7,
     "theverge.com": 7,
     "techcrunch.com": 7,
@@ -69,12 +71,15 @@ LOW_VALUE_SOURCE_DOMAINS: tuple[str, ...] = (
     "globenewswire.com",
     "businesswire.com",
     "accesswire.com",
+    "awaytogarden.com",
     "naturalnews.com",
 )
 
 LOW_VALUE_SOURCE_MARKERS: tuple[str, ...] = (
+    "a way to garden",
     "business wire",
     "ein presswire",
+    "first opinion",
     "globenewswire",
     "pr newswire",
     "prnewswire",
@@ -89,6 +94,7 @@ LOW_VALUE_URL_MARKERS: tuple[str, ...] = (
     "/press_releases/",
     "/ein-presswire-",
     "/business-wire/",
+    "/first-opinion/",
     "/globenewswire/",
 )
 
@@ -100,10 +106,15 @@ LOW_VALUE_TITLE_MARKERS: tuple[str, ...] = (
     "doesn't matter that people hate",
     "doesn’t matter that people hate",
     "investor alert",
+    "opinion |",
+    "opinion:",
     "pulls u-turn",
     "reports first quarter fiscal",
     "reports fiscal",
+    "sexually explicit texts",
+    "sexting controversy",
     "to host conference call",
+    "wife told campaign",
     "why shares",
 )
 
@@ -553,37 +564,58 @@ TOPICS: tuple[TopicSource, ...] = (
             "major US headlines today",
             "breaking national news today",
         ),
-        feeds=("https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en",),
+        feeds=(
+            "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en",
+            "https://feeds.npr.org/1001/rss.xml",
+        ),
     ),
     TopicSource(
         code="WORLD",
         name="World",
         search_queries=("major world news today", "international headlines today"),
-        feeds=("https://news.google.com/rss/headlines/section/topic/WORLD?hl=en-US&gl=US&ceid=US:en",),
+        feeds=(
+            "https://news.google.com/rss/headlines/section/topic/WORLD?hl=en-US&gl=US&ceid=US:en",
+            "https://feeds.npr.org/1004/rss.xml",
+        ),
     ),
     TopicSource(
         code="BUSINESS",
         name="Business",
         search_queries=("markets economy business news today", "major company earnings economy today"),
-        feeds=("https://news.google.com/rss/headlines/section/topic/BUSINESS?hl=en-US&gl=US&ceid=US:en",),
+        feeds=(
+            "https://news.google.com/rss/headlines/section/topic/BUSINESS?hl=en-US&gl=US&ceid=US:en",
+            "https://feeds.npr.org/1006/rss.xml",
+        ),
     ),
     TopicSource(
         code="TECHNOLOGY",
         name="Technology",
         search_queries=("technology AI startup news today", "big tech policy AI news today"),
-        feeds=("https://news.google.com/rss/headlines/section/topic/TECHNOLOGY?hl=en-US&gl=US&ceid=US:en",),
+        feeds=(
+            "https://news.google.com/rss/headlines/section/topic/TECHNOLOGY?hl=en-US&gl=US&ceid=US:en",
+            "https://feeds.npr.org/1019/rss.xml",
+            "https://feeds.arstechnica.com/arstechnica/technology-lab",
+        ),
     ),
     TopicSource(
         code="SCIENCE",
         name="Science",
         search_queries=("science space climate research news today",),
-        feeds=("https://news.google.com/rss/headlines/section/topic/SCIENCE?hl=en-US&gl=US&ceid=US:en",),
+        feeds=(
+            "https://news.google.com/rss/headlines/section/topic/SCIENCE?hl=en-US&gl=US&ceid=US:en",
+            "https://feeds.npr.org/1007/rss.xml",
+            "https://www.nasa.gov/news-release/feed/",
+        ),
     ),
     TopicSource(
         code="HEALTH",
         name="Health",
         search_queries=("health medicine public health news today",),
-        feeds=("https://news.google.com/rss/headlines/section/topic/HEALTH?hl=en-US&gl=US&ceid=US:en",),
+        feeds=(
+            "https://news.google.com/rss/headlines/section/topic/HEALTH?hl=en-US&gl=US&ceid=US:en",
+            "https://feeds.npr.org/1003/rss.xml",
+            "https://www.statnews.com/category/health/feed/",
+        ),
     ),
     TopicSource(
         code="SPORTS",
@@ -3533,9 +3565,14 @@ Generated at: {generated_at}
         if normalized_topic == "TECHNOLOGY" and any(
             marker in lowered_title
             for marker in (
+                "already discounted",
+                "best buy",
+                "deal of the day",
+                "discounted for",
                 "i put ",
                 "hands-on:",
                 "review:",
+                "save on",
                 "actually pretty useful",
                 "huge sales hit",
                 "this is the ",
@@ -3565,10 +3602,26 @@ Generated at: {generated_at}
             )
         ):
             return True
+        if normalized_topic == "SCIENCE" and any(
+            marker in text
+            for marker in (
+                "a way to garden",
+                "hummingbird-red flower connection",
+            )
+        ):
+            return True
+        if normalized_topic == "WORLD" and (
+            ("campaign" in lowered_title and ("wife" in lowered_title or "texts" in lowered_title))
+            or "sexually explicit texts" in lowered_title
+            or "sexting" in lowered_title
+        ):
+            return True
         if normalized_topic == "TOP_NEWS" and any(
             marker in lowered_title
             for marker in (
                 "extramarital",
+                "sexting",
+                "sexually explicit texts",
                 "wife says",
                 "family of four killed",
                 "wedding. bus driver charged",
@@ -3652,6 +3705,12 @@ Generated at: {generated_at}
                 "merger",
                 "antitrust",
                 "bank",
+                "uaw",
+                "strike",
+                "union",
+                "general motors",
+                "automaker",
+                "truck supplier",
             ),
         ):
             return "BUSINESS"
