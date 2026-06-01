@@ -1587,6 +1587,7 @@ Sports score packet:
             index
             for index, story in enumerate(repaired)
             if not self._story_has_valid_image(story)
+            and index >= 3
         ]
         for index in reversed(missing_indices):
             if current_images >= required_images:
@@ -3568,11 +3569,14 @@ Generated at: {generated_at}
             for marker in (
                 "extramarital",
                 "wife says",
+                "family of four killed",
                 "wedding. bus driver charged",
                 "two biggest movies",
                 "directed by youtubers",
             )
         ):
+            return True
+        if normalized_topic == "TOP_NEWS" and "bus crash" in lowered_title and "family" in lowered_title:
             return True
         if normalized_topic == "SPORTS" and (
             "/video/clip/" in lowered_url

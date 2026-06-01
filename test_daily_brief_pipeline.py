@@ -1365,6 +1365,15 @@ def test_low_density_filler_candidates_are_rejected_before_story_selection():
             },
             "BUSINESS",
         ),
+        (
+            {
+                "title": "Family of Four Killed in Virginia Bus Crash",
+                "url": "https://apnews.com/article/virginia-bus-crash-family-deaths",
+                "source": "Associated Press",
+                "description": "A localized tragedy involving a family traveling to a wedding.",
+            },
+            "TOP_NEWS",
+        ),
     ]
 
     for raw_item, topic_code in cases:
@@ -1609,6 +1618,64 @@ def test_story_image_coverage_replaces_image_less_tail_stories():
     assert len(repaired) == 4
     assert sum(DailyBriefPipeline._story_has_valid_image(story) for story in repaired) >= 3
     assert "business-image" in {story["id"] for story in repaired}
+
+
+def test_story_image_coverage_preserves_image_less_lead_story():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    image_url = "https://images.example.com/media/story/abc123?w=1200&format=webp"
+    articles = [
+        ArticleCandidate(
+            id="lead",
+            topic="TOP_NEWS",
+            title="US says it struck Iranian military sites",
+            source="Reuters",
+            url="https://www.reuters.com/world/middle-east/iran-strikes",
+            score=30,
+        ),
+        ArticleCandidate(
+            id="world",
+            topic="WORLD",
+            title="Malaysia enforces youth social media ban",
+            source="AP News",
+            url="https://apnews.com/article/malaysia-social-media-ban",
+            image_url=image_url,
+            score=20,
+        ),
+        ArticleCandidate(
+            id="business",
+            topic="BUSINESS",
+            title="Bond market warning changes inflation outlook",
+            source="AP News",
+            url="https://apnews.com/article/bond-market-warning",
+            image_url=image_url,
+            score=19,
+        ),
+        ArticleCandidate(
+            id="sports-missing",
+            topic="SPORTS",
+            title="Mariners winning streak shifts playoff race",
+            source="ESPN",
+            url="https://www.espn.com/mlb/story/mariners-winning-streak",
+            score=18,
+        ),
+        ArticleCandidate(
+            id="sports-image",
+            topic="SPORTS",
+            title="Thunder injury changes Finals rotation",
+            source="ESPN",
+            url="https://www.espn.com/nba/story/thunder-finals-rotation",
+            image_url=image_url,
+            score=17,
+        ),
+    ]
+    stories = [pipeline._normalized_story_from_article(article) for article in articles[:4]]
+
+    repaired = pipeline._ensure_story_image_coverage(stories, articles)
+
+    assert repaired[0]["id"] == "lead"
+    assert not DailyBriefPipeline._story_has_valid_image(repaired[0])
+    assert "sports-image" in {story["id"] for story in repaired}
+    assert sum(DailyBriefPipeline._story_has_valid_image(story) for story in repaired) >= 3
 
 
 def test_story_image_coverage_trims_image_less_tail_when_no_replacement_exists():
