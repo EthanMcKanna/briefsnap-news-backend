@@ -1554,6 +1554,86 @@ def test_story_rebalancing_removes_near_duplicate_story_slots():
     assert "Judge orders president's name off Kennedy Center" not in titles
 
 
+def test_story_image_coverage_replaces_image_less_tail_stories():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    image_url = "https://images.example.com/media/story/abc123?w=1200&format=webp"
+    articles = [
+        ArticleCandidate(
+            id="top",
+            topic="TOP_NEWS",
+            title="Federal court blocks disputed enforcement rule",
+            source="Reuters",
+            url="https://www.reuters.com/world/us/top",
+            image_url=image_url,
+            score=20,
+        ),
+        ArticleCandidate(
+            id="world",
+            topic="WORLD",
+            title="European leaders reach security financing deal",
+            source="BBC",
+            url="https://www.bbc.com/news/world",
+            image_url=image_url,
+            score=19,
+        ),
+        ArticleCandidate(
+            id="business-missing",
+            topic="BUSINESS",
+            title="Automaker supplier labor talks stall before deadline",
+            source="WSJ",
+            url="https://www.wsj.com/business/autos/labor",
+            score=18,
+        ),
+        ArticleCandidate(
+            id="sports-missing",
+            topic="SPORTS",
+            title="Mariners winning streak shifts playoff race",
+            source="ESPN",
+            url="https://www.espn.com/mlb/story/mariners-winning-streak",
+            score=17,
+        ),
+        ArticleCandidate(
+            id="business-image",
+            topic="BUSINESS",
+            title="Bond market warning changes inflation outlook",
+            source="AP News",
+            url="https://apnews.com/article/bond-market-warning",
+            image_url=image_url,
+            score=16,
+        ),
+    ]
+    stories = [pipeline._normalized_story_from_article(article) for article in articles[:4]]
+
+    repaired = pipeline._ensure_story_image_coverage(stories, articles)
+
+    assert len(repaired) == 4
+    assert sum(DailyBriefPipeline._story_has_valid_image(story) for story in repaired) >= 3
+    assert "business-image" in {story["id"] for story in repaired}
+
+
+def test_story_image_coverage_trims_image_less_tail_when_no_replacement_exists():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    image_url = "https://images.example.com/media/story/abc123?w=1200&format=webp"
+    articles = [
+        ArticleCandidate(
+            id=f"story-{index}",
+            topic="TOP_NEWS" if index == 1 else "BUSINESS",
+            title=f"Distinct current story {index}",
+            source="Reuters" if index <= 3 else "WSJ",
+            url=f"https://example.com/story-{index}",
+            image_url=image_url if index <= 8 else None,
+            score=20 - index,
+        )
+        for index in range(1, 12)
+    ]
+    stories = [pipeline._normalized_story_from_article(article) for article in articles]
+
+    repaired = pipeline._ensure_story_image_coverage(stories, articles)
+
+    assert len(repaired) == 10
+    assert sum(DailyBriefPipeline._story_has_valid_image(story) for story in repaired) == 8
+
+
 def test_image_url_filter_accepts_validated_cdn_image_shapes():
     assert ArticleFetcher._is_valid_image_url(
         "https://images.example.com/media/story/abc123?w=1200&format=webp"

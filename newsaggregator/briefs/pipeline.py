@@ -1181,6 +1181,7 @@ Sports score packet:
         self._ensure_sports_news_stories(normalized_stories, articles, story_ids)
         self._ensure_topic_breadth_stories(normalized_stories, articles, story_ids)
         normalized_stories = self._rebalance_story_order(normalized_stories, articles)
+        normalized_stories = self._ensure_story_image_coverage(normalized_stories, articles)
 
         now = datetime.now(timezone.utc)
         sections = self._normalize_sections(payload.get("sections", []), normalized_stories, articles)
@@ -1534,6 +1535,87 @@ Sports score packet:
         ordered.extend(remaining)
         return self._dedupe_story_list(ordered)
 
+    def _ensure_story_image_coverage(
+        self,
+        stories: list[dict[str, Any]],
+        articles: list[ArticleCandidate],
+    ) -> list[dict[str, Any]]:
+        if not stories:
+            return stories
+
+        required_images = (len(stories) * 3 + 3) // 4
+        current_images = sum(1 for story in stories if self._story_has_valid_image(story))
+        if current_images >= required_images:
+            return stories
+
+        story_ids = {str(story.get("id") or "") for story in stories if story.get("id")}
+        used_replacement_ids: set[str] = set()
+        image_articles = [
+            article
+            for article in articles
+            if article.id not in story_ids
+            and ArticleFetcher._is_valid_image_url(str(article.image_url or ""))
+            and not self._is_low_value_candidate(
+                title=article.title,
+                topic_code=article.topic,
+                source=article.source,
+                url=article.url,
+                description=article.description or article.content[:400],
+            )
+        ]
+        image_articles.sort(key=lambda article: article.score, reverse=True)
+
+        def replacement_for(topic: str) -> ArticleCandidate | None:
+            normalized_topic = self._normalize_topic(topic)
+            for prefer_same_topic in (True, False):
+                for article in image_articles:
+                    if article.id in used_replacement_ids:
+                        continue
+                    if prefer_same_topic and self._normalize_topic(article.topic) != normalized_topic:
+                        continue
+                    if not prefer_same_topic and self._normalize_topic(article.topic) == "SPORTS":
+                        continue
+                    replacement = self._normalized_story_from_article(article)
+                    if any(self._stories_are_near_duplicates(replacement, story) for story in stories):
+                        continue
+                    used_replacement_ids.add(article.id)
+                    return article
+            return None
+
+        repaired = list(stories)
+        missing_indices = [
+            index
+            for index, story in enumerate(repaired)
+            if not self._story_has_valid_image(story)
+        ]
+        for index in reversed(missing_indices):
+            if current_images >= required_images:
+                break
+            replacement = replacement_for(str(repaired[index].get("topic") or ""))
+            if not replacement:
+                continue
+            repaired[index] = self._normalized_story_from_article(replacement)
+            current_images += 1
+
+        while repaired and current_images < (len(repaired) * 3 + 3) // 4 and len(repaired) > MIN_NORMALIZED_STORIES:
+            drop_index = next(
+                (
+                    index
+                    for index in range(len(repaired) - 1, -1, -1)
+                    if not self._story_has_valid_image(repaired[index])
+                ),
+                None,
+            )
+            if drop_index is None:
+                break
+            repaired.pop(drop_index)
+
+        return repaired
+
+    @staticmethod
+    def _story_has_valid_image(story: dict[str, Any]) -> bool:
+        return ArticleFetcher._is_valid_image_url(str(story.get("image_url") or ""))
+
     @classmethod
     def _dedupe_story_list(cls, stories: list[dict[str, Any]]) -> list[dict[str, Any]]:
         deduped: list[dict[str, Any]] = []
@@ -1599,6 +1681,7 @@ Sports score packet:
         self._ensure_sports_news_stories(stories, articles, story_ids)
         self._ensure_topic_breadth_stories(stories, articles, story_ids)
         stories = self._rebalance_story_order(stories, articles)
+        stories = self._ensure_story_image_coverage(stories, articles)
         score_cards = self.sports_score_cards[:6]
         headline, dek, summary, quick_hits = self._grounded_top_level_copy(payload={}, stories=stories)
         sections = self._normalize_sections([], stories, articles)
