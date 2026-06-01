@@ -1486,6 +1486,51 @@ def test_quality_gate_requires_science_when_source_supported():
     assert any("science item when source-supported" in issue for issue in issues)
 
 
+def test_quality_gate_does_not_force_single_source_entertainment_lane():
+    brief = valid_quality_brief()
+    brief["stories"].extend(
+        [
+            {
+                "id": "story-7",
+                "topic": "HEALTH",
+                "title": "Hospitals prepare for summer virus uptick",
+                "summary": "Health systems are preparing staffing plans as seasonal indicators rise.",
+                "why_it_matters": "The preparations can affect local care access.",
+                "source": "STAT",
+                "url": "https://www.statnews.com/2026/05/31/summer-virus-hospitals",
+            },
+            {
+                "id": "story-8",
+                "topic": "SCIENCE",
+                "title": "Meteor blast data updates NASA risk models",
+                "summary": "Researchers are updating regional blast models after a meteor exploded in the atmosphere.",
+                "why_it_matters": "The data can improve public warning systems.",
+                "source": "ScienceAlert",
+                "url": "https://www.sciencealert.com/meteor-blast-data",
+            },
+        ]
+    )
+    brief["coverage_report"] = {
+        "source_packet_count": 30,
+        "source_packet_domains": 14,
+        "topic_counts": {
+            "TOP_NEWS": 8,
+            "WORLD": 4,
+            "BUSINESS": 4,
+            "TECHNOLOGY": 4,
+            "HEALTH": 2,
+            "SCIENCE": 2,
+            "SPORTS": 3,
+            "ENTERTAINMENT": 1,
+        },
+    }
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+
+    issues = pipeline._brief_quality_issues(brief)
+
+    assert not any("ENTERTAINMENT" in issue for issue in issues)
+
+
 def test_quality_gate_rejects_press_release_story_values():
     brief = valid_quality_brief()
     brief["stories"][2] = {

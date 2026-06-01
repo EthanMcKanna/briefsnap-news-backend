@@ -1668,7 +1668,7 @@ Sports score packet:
         normalized = DailyBriefPipeline._normalize_topic(topic)
         if normalized == "TOP_NEWS":
             return 3
-        if normalized in {"WORLD", "HEALTH", "SCIENCE", "ENTERTAINMENT"}:
+        if normalized in {"WORLD", "HEALTH", "SCIENCE"}:
             return 1
         return 2
 
