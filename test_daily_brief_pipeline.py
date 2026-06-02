@@ -1452,6 +1452,18 @@ def test_low_density_filler_candidates_are_rejected_before_story_selection():
         ),
         (
             {
+                "title": "Fire's Footprint on Santa Rosa Island",
+                "url": "https://science.nasa.gov/earth/earth-observatory/fires-footprint-on-santa-rosa-island/",
+                "source": "NASA",
+                "description": (
+                    "A satellite-image explainer about a wildland fire footprint, "
+                    "not a current science or policy development."
+                ),
+            },
+            "SCIENCE",
+        ),
+        (
+            {
                 "title": "007 First Light is already discounted for the PS5 and Steam",
                 "url": "https://www.theverge.com/deals/2026/05/31/007-first-light-discount",
                 "source": "The Verge",
@@ -1465,6 +1477,15 @@ def test_low_density_filler_candidates_are_rejected_before_story_selection():
                 "url": "https://www.cbsnews.com/news/platner-wife-campaign-texts/",
                 "source": "CBS News",
                 "description": "A domestic campaign-scandal item surfaced in the wrong section.",
+            },
+            "WORLD",
+        ),
+        (
+            {
+                "title": "Australia politics live: Chalmers says Wilson faces questions",
+                "url": "https://www.theguardian.com/australia-news/live/2026/jun/02/australia-politics-live",
+                "source": "World news | The Guardian",
+                "description": "A rolling local politics ticker, not a concise global-impact story.",
             },
             "WORLD",
         ),
@@ -1548,6 +1569,70 @@ def test_topic_selection_diversifies_domains_before_source_packet():
 
     assert domain_counts["npr.org"] <= 3
     assert len(domain_counts) >= 3
+
+
+def test_candidate_dedupe_removes_paraphrased_same_story_before_source_packet():
+    articles = [
+        ArticleCandidate(
+            id="local-kennedy",
+            topic="TOP_NEWS",
+            title="Judge orders president's name off Kennedy Center",
+            source="Local Arts Wire",
+            url="https://local.example.com/kennedy-center-name-order",
+            description="A judge ruled on the Kennedy Center naming dispute.",
+            score=12,
+        ),
+        ArticleCandidate(
+            id="trusted-kennedy",
+            topic="TOP_NEWS",
+            title="Trump's Kennedy Center plans were blocked by a judge",
+            source="Washington Post",
+            url="https://www.washingtonpost.com/style/kennedy-center-ruling",
+            description="The ruling blocks a disputed Kennedy Center naming plan.",
+            score=24,
+        ),
+        ArticleCandidate(
+            id="world-security",
+            topic="WORLD",
+            title="European leaders agree on new defense financing",
+            source="Reuters",
+            url="https://www.reuters.com/world/europe/defense-financing",
+            description="The agreement changes near-term NATO budgeting.",
+            score=20,
+        ),
+    ]
+
+    deduped = DailyBriefPipeline._dedupe(articles)
+    ids = {article.id for article in deduped}
+
+    assert "trusted-kennedy" in ids
+    assert "local-kennedy" not in ids
+    assert "world-security" in ids
+
+
+def test_candidate_dedupe_keeps_distinct_same_entity_stories():
+    articles = [
+        ArticleCandidate(
+            id="kennedy",
+            topic="TOP_NEWS",
+            title="Trump's Kennedy Center plans were blocked by a judge",
+            source="Washington Post",
+            url="https://www.washingtonpost.com/style/kennedy-center-ruling",
+            score=24,
+        ),
+        ArticleCandidate(
+            id="tariffs",
+            topic="BUSINESS",
+            title="Trump tariff pause shifts automaker supply plans",
+            source="Reuters",
+            url="https://www.reuters.com/business/autos/tariff-pause",
+            score=23,
+        ),
+    ]
+
+    deduped = DailyBriefPipeline._dedupe(articles)
+
+    assert [article.id for article in deduped] == ["kennedy", "tariffs"]
 
 
 def test_source_packet_order_does_not_frontload_sports():
@@ -1974,6 +2059,9 @@ def test_image_url_filter_accepts_validated_cdn_image_shapes():
     )
     assert not ArticleFetcher._is_valid_image_url(
         "https://www.washingtonpost.com/dr/resources/images/generic-newsletter-signup.png"
+    )
+    assert not ArticleFetcher._is_valid_image_url(
+        "https://media.npr.org/include/images/facebook-default-wide-s1400-c85.jpg"
     )
 
 

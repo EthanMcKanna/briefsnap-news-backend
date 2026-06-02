@@ -776,9 +776,9 @@ class DailyBriefPipeline:
 
         candidates = [self._candidate_from_raw(item, topic) for item in raw]
         candidates = [candidate for candidate in candidates if candidate]
-        candidates = self._dedupe(candidates)
         for candidate in candidates:
             candidate.score = self._score_candidate(candidate)
+        candidates = self._dedupe(candidates)
         return sorted(candidates, key=lambda article: article.score, reverse=True)
 
     def _fetch_rss(self, url: str, topic: TopicSource) -> list[dict[str, Any]]:
@@ -3703,10 +3703,13 @@ Generated at: {generated_at}
             )
         ):
             return True
+        if normalized_topic in {"TOP_NEWS", "WORLD"} and "politics live:" in lowered_title:
+            return True
         if normalized_topic == "SCIENCE" and any(
-            marker in text
+            marker in text or marker in lowered_url
             for marker in (
                 "a way to garden",
+                "earth-observatory",
                 "hummingbird-red flower connection",
             )
         ):
@@ -3850,21 +3853,61 @@ Generated at: {generated_at}
             return "ENTERTAINMENT"
         return normalized_topic
 
-    @staticmethod
-    def _dedupe(candidates: list[ArticleCandidate]) -> list[ArticleCandidate]:
-        seen_urls: set[str] = set()
-        seen_titles: set[str] = set()
+    @classmethod
+    def _dedupe(cls, candidates: list[ArticleCandidate]) -> list[ArticleCandidate]:
         result: list[ArticleCandidate] = []
         for candidate in candidates:
-            url_key = candidate.url
-            title_key = re.sub(r"\W+", " ", candidate.title.lower()).strip()
-            title_key = " ".join(title_key.split()[:10])
-            if url_key in seen_urls or title_key in seen_titles:
+            duplicate_index = next(
+                (
+                    index
+                    for index, existing in enumerate(result)
+                    if cls._article_candidates_are_duplicates(candidate, existing)
+                ),
+                None,
+            )
+            if duplicate_index is None:
+                result.append(candidate)
                 continue
-            seen_urls.add(url_key)
-            seen_titles.add(title_key)
-            result.append(candidate)
+
+            existing = result[duplicate_index]
+            if cls._candidate_preference_key(candidate) > cls._candidate_preference_key(existing):
+                result[duplicate_index] = candidate
         return result
+
+    @classmethod
+    def _article_candidates_are_duplicates(
+        cls,
+        left: ArticleCandidate,
+        right: ArticleCandidate,
+    ) -> bool:
+        if left.url and right.url and left.url == right.url:
+            return True
+
+        left_title = cls._article_title_key(left.title)
+        right_title = cls._article_title_key(right.title)
+        if left_title and right_title and left_title == right_title:
+            return True
+
+        return cls._stories_are_near_duplicates(
+            {"title": left.title},
+            {"title": right.title},
+        )
+
+    @staticmethod
+    def _article_title_key(title: str) -> str:
+        title_key = re.sub(r"\W+", " ", str(title or "").lower()).strip()
+        return " ".join(title_key.split()[:10])
+
+    @classmethod
+    def _candidate_preference_key(cls, candidate: ArticleCandidate) -> tuple[float, int, int, int, int]:
+        domain = cls._domain_name(candidate.url)
+        return (
+            float(candidate.score or 0),
+            1 if cls._is_trusted_domain(domain) else 0,
+            1 if ArticleFetcher._is_valid_image_url(str(candidate.image_url or "")) else 0,
+            1 if candidate.description or candidate.content else 0,
+            min(len(candidate.title or ""), 120),
+        )
 
     @staticmethod
     def _rebalance_article_order(articles: list[ArticleCandidate]) -> list[ArticleCandidate]:

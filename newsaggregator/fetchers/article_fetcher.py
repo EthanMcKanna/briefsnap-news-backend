@@ -294,6 +294,7 @@ class ArticleFetcher:
             'appstore', 'google-play', 'play-store',
             'download-on-the-app-store', 'newsletter', 'sign-up',
             'signup', 'generic-newsletter', 'wordmark', 'headshot',
+            'facebook-default', 'default-wide',
         ]
         
         # Check if any logo pattern is in the URL
