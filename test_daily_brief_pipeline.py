@@ -1615,6 +1615,88 @@ def test_topic_selection_diversifies_domains_before_source_packet():
     assert len(domain_counts) >= 3
 
 
+def test_source_packet_repairs_domain_breadth_without_breaking_topic_floors():
+    domains = [
+        "npr.org",
+        "bbc.com",
+        "reuters.com",
+        "cnbc.com",
+        "theverge.com",
+        "statnews.com",
+        "espn.com",
+    ]
+    topic_counts = [
+        ("TOP_NEWS", 8),
+        ("WORLD", 4),
+        ("BUSINESS", 4),
+        ("TECHNOLOGY", 4),
+        ("HEALTH", 2),
+        ("SCIENCE", 2),
+        ("SPORTS", 3),
+        ("ENTERTAINMENT", 1),
+    ]
+    articles: list[ArticleCandidate] = []
+    score = 100
+    for topic, count in topic_counts:
+        for index in range(count):
+            domain = "espn.com" if topic == "SPORTS" else domains[len(articles) % len(domains)]
+            title = (
+                f"NBA playoff injury report changes rotation {index}"
+                if topic == "SPORTS"
+                else f"{topic} source-backed story {index}"
+            )
+            articles.append(
+                ArticleCandidate(
+                    id=f"{topic.lower()}-{index}",
+                    topic=topic,
+                    title=title,
+                    source="ESPN" if topic == "SPORTS" else domain,
+                    url=(
+                        f"https://www.espn.com/nba/story/{index}"
+                        if topic == "SPORTS"
+                        else f"https://{domain}/{topic.lower()}/story-{index}"
+                    ),
+                    description="A current source-backed item with enough detail for the daily brief.",
+                    score=score,
+                )
+            )
+            score -= 1
+    local_candidate = ArticleCandidate(
+        id="local-rare-domain",
+        topic="LOCAL",
+        title="Local board approves new transit funding",
+        source="City Desk",
+        url="https://citydesk.example/local/transit-funding",
+        description="A rare-domain item from a topic that cannot replace a required source-packet floor.",
+        score=score,
+    )
+    ap_candidate = ArticleCandidate(
+        id="ap-world-rare-domain",
+        topic="WORLD",
+        title="World leaders agree on new security financing",
+        source="AP News",
+        url="https://apnews.com/article/world-security-financing-rare-domain",
+        description="A current world story from a domain missing from the selected packet.",
+        score=1,
+    )
+
+    selected = DailyBriefPipeline._ensure_minimum_source_domains(
+        articles.copy(),
+        [*articles, local_candidate, ap_candidate],
+        minimum=8,
+        limit=len(articles),
+    )
+    selected_domains = Counter(DailyBriefPipeline._domain_name(article.url) for article in selected)
+    selected_topics = Counter(DailyBriefPipeline._normalize_topic(article.topic) for article in selected)
+
+    assert len(selected) == len(articles)
+    assert len(selected_domains) >= 8
+    assert "apnews.com" in selected_domains
+    assert "citydesk.example" not in selected_domains
+    assert selected_topics["WORLD"] >= 4
+    assert selected_topics["TOP_NEWS"] >= 8
+
+
 def test_candidate_dedupe_removes_paraphrased_same_story_before_source_packet():
     articles = [
         ArticleCandidate(

@@ -4435,6 +4435,13 @@ Generated at: {generated_at}
                 minimum=minimum,
                 limit=limit,
             )
+        if limit >= 24:
+            selected = DailyBriefPipeline._ensure_minimum_source_domains(
+                selected,
+                articles,
+                minimum=MIN_V8_SOURCE_PACKET_DOMAINS,
+                limit=limit,
+            )
         return selected
 
     @staticmethod
@@ -4483,6 +4490,92 @@ Generated at: {generated_at}
 
             selected_ids.add(article.id)
             existing_count += 1
+
+        return selected
+
+    @staticmethod
+    def _ensure_minimum_source_domains(
+        selected: list[ArticleCandidate],
+        articles: list[ArticleCandidate],
+        *,
+        minimum: int,
+        limit: int,
+    ) -> list[ArticleCandidate]:
+        if minimum <= 0:
+            return selected
+
+        selected_ids = {article.id for article in selected}
+        domain_counts = Counter(
+            DailyBriefPipeline._domain_name(article.url)
+            for article in selected
+            if article.url
+        )
+        topic_counts = Counter(
+            DailyBriefPipeline._normalize_topic(article.topic)
+            for article in selected
+            if article.topic
+        )
+        selected_domains = {domain for domain in domain_counts if domain}
+        if len(selected_domains) >= minimum:
+            return selected
+
+        def can_remove(article: ArticleCandidate, *, replacement_topic: str) -> bool:
+            domain = DailyBriefPipeline._domain_name(article.url)
+            topic = DailyBriefPipeline._normalize_topic(article.topic)
+            topic_floor = SOURCE_PACKET_TOPIC_MINIMUMS.get(topic, 0)
+            projected_topic_count = topic_counts.get(topic, 0) - 1
+            if topic == replacement_topic:
+                projected_topic_count += 1
+            return domain_counts.get(domain, 0) > 1 and projected_topic_count >= topic_floor
+
+        for article in articles:
+            if len(selected_domains) >= minimum:
+                break
+            if article.id in selected_ids:
+                continue
+
+            domain = DailyBriefPipeline._domain_name(article.url)
+            if not domain or domain in selected_domains:
+                continue
+
+            topic = DailyBriefPipeline._normalize_topic(article.topic)
+            if topic == "SPORTS" and not DailyBriefPipeline._is_high_signal_sports_candidate(
+                title=article.title,
+                source=article.source,
+                url=article.url,
+                description=article.description or article.content[:400],
+            ):
+                continue
+
+            if len(selected) < limit:
+                selected.append(article)
+            else:
+                replacement_index = next(
+                    (
+                        index
+                        for index in range(len(selected) - 1, -1, -1)
+                        if can_remove(selected[index], replacement_topic=topic)
+                    ),
+                    None,
+                )
+                if replacement_index is None:
+                    continue
+
+                removed = selected[replacement_index]
+                removed_domain = DailyBriefPipeline._domain_name(removed.url)
+                removed_topic = DailyBriefPipeline._normalize_topic(removed.topic)
+                selected_ids.discard(removed.id)
+                domain_counts[removed_domain] -= 1
+                if domain_counts[removed_domain] <= 0:
+                    domain_counts.pop(removed_domain, None)
+                    selected_domains.discard(removed_domain)
+                topic_counts[removed_topic] -= 1
+                selected[replacement_index] = article
+
+            selected_ids.add(article.id)
+            domain_counts[domain] += 1
+            topic_counts[topic] += 1
+            selected_domains.add(domain)
 
         return selected
 
