@@ -1266,12 +1266,14 @@ Sports score packet:
         self._ensure_sports_news_stories(normalized_stories, articles, story_ids)
         self._ensure_topic_breadth_stories(normalized_stories, articles, story_ids)
         normalized_stories = self._rebalance_story_order(normalized_stories, articles)
+        normalized_stories = self._ensure_leading_domain_diversity(normalized_stories, articles)
         normalized_stories = self._ensure_story_image_coverage(normalized_stories, articles)
         normalized_stories = self._filter_story_list_for_publish(normalized_stories)
         story_ids = {str(story.get("id")) for story in normalized_stories if story.get("id")}
         self._ensure_sports_news_stories(normalized_stories, articles, story_ids)
         self._ensure_topic_breadth_stories(normalized_stories, articles, story_ids)
         normalized_stories = self._rebalance_story_order(normalized_stories, articles)
+        normalized_stories = self._ensure_leading_domain_diversity(normalized_stories, articles)
 
         now = datetime.now(timezone.utc)
         sections = self._normalize_sections(payload.get("sections", []), normalized_stories, articles)
@@ -1711,6 +1713,163 @@ Sports score packet:
 
         return repaired
 
+    def _ensure_leading_domain_diversity(
+        self,
+        stories: list[dict[str, Any]],
+        articles: list[ArticleCandidate],
+    ) -> list[dict[str, Any]]:
+        if len(stories) < 6:
+            return stories
+
+        repaired = self._dedupe_story_list(list(stories))
+        window_size = min(8, len(repaired))
+        required_domains = 4 if len(repaired) >= 8 else 3
+        article_by_id = {article.id: article for article in articles}
+
+        def story_domain(story: dict[str, Any]) -> str:
+            return self._domain_name(str(story.get("url") or ""))
+
+        def story_rank(story: dict[str, Any]) -> tuple[float, int, int, int]:
+            article = article_by_id.get(str(story.get("id") or ""))
+            score = article.score if article else 0
+            topic = self._normalize_topic(story.get("topic"))
+            topic_priority = TOPIC_PRIORITY.index(topic) if topic in TOPIC_PRIORITY else len(TOPIC_PRIORITY)
+            return (
+                float(score or 0),
+                1 if self._is_trusted_domain(story_domain(story)) else 0,
+                1 if self._story_has_valid_image(story) else 0,
+                -topic_priority,
+            )
+
+        def leading_domain_counts() -> Counter[str]:
+            return Counter(
+                domain
+                for domain in (story_domain(story) for story in repaired[:window_size])
+                if domain
+            )
+
+        def leading_domains_are_healthy() -> bool:
+            counts = leading_domain_counts()
+            return (
+                len(counts) >= required_domains
+                and max(counts.values(), default=0) <= MAX_LEADING_STORIES_PER_DOMAIN
+            )
+
+        if leading_domains_are_healthy():
+            return repaired
+
+        candidate_pool = list(repaired[window_size:])
+        used_ids = {str(story.get("id") or "") for story in repaired if story.get("id")}
+        for article in articles:
+            if article.id in used_ids:
+                continue
+            candidate = self._normalized_story_from_article(article)
+            if not self._story_passes_editorial_gate(candidate):
+                continue
+            candidate_pool.append(candidate)
+            used_ids.add(article.id)
+
+        candidate_pool.sort(key=story_rank, reverse=True)
+
+        for _ in range(window_size):
+            counts = leading_domain_counts()
+            if leading_domains_are_healthy():
+                break
+
+            overrepresented = {
+                domain
+                for domain, count in counts.items()
+                if count > MAX_LEADING_STORIES_PER_DOMAIN
+            }
+            if overrepresented:
+                replace_indices: list[int] = []
+                kept_by_domain: Counter[str] = Counter()
+                for index in range(window_size):
+                    domain = story_domain(repaired[index])
+                    if domain not in overrepresented:
+                        continue
+                    kept_by_domain[domain] += 1
+                    if kept_by_domain[domain] > MAX_LEADING_STORIES_PER_DOMAIN:
+                        replace_indices.append(index)
+            else:
+                replace_indices = list(range(1, window_size))
+
+            if not replace_indices:
+                break
+
+            replace_index = min(replace_indices, key=lambda index: story_rank(repaired[index]))
+            replaced_story = repaired[replace_index]
+            adjusted_counts = counts.copy()
+            replaced_domain = story_domain(replaced_story)
+            if replaced_domain:
+                adjusted_counts[replaced_domain] = max(0, adjusted_counts.get(replaced_domain, 0) - 1)
+                if adjusted_counts[replaced_domain] == 0:
+                    del adjusted_counts[replaced_domain]
+
+            replacement = next(
+                (
+                    candidate
+                    for candidate in candidate_pool
+                    if self._leading_domain_replacement_is_useful(
+                        candidate=candidate,
+                        current_stories=repaired,
+                        replace_index=replace_index,
+                        domain_counts=adjusted_counts,
+                        required_domains=required_domains,
+                    )
+                ),
+                None,
+            )
+            if not replacement:
+                break
+
+            replacement_id = str(replacement.get("id") or "")
+            candidate_pool = [
+                candidate
+                for candidate in candidate_pool
+                if str(candidate.get("id") or "") != replacement_id
+            ]
+            repaired[replace_index] = replacement
+            repaired = [
+                story
+                for index, story in enumerate(repaired)
+                if index == replace_index or str(story.get("id") or "") != replacement_id
+            ]
+            if replaced_story.get("id") and all(
+                str(story.get("id") or "") != str(replaced_story.get("id"))
+                for story in repaired
+            ):
+                repaired.append(replaced_story)
+            window_size = min(8, len(repaired))
+
+        return self._dedupe_story_list(repaired[:18])
+
+    def _leading_domain_replacement_is_useful(
+        self,
+        *,
+        candidate: dict[str, Any],
+        current_stories: list[dict[str, Any]],
+        replace_index: int,
+        domain_counts: Counter[str],
+        required_domains: int,
+    ) -> bool:
+        candidate_domain = self._domain_name(str(candidate.get("url") or ""))
+        if not candidate_domain:
+            return False
+        if domain_counts.get(candidate_domain, 0) >= MAX_LEADING_STORIES_PER_DOMAIN:
+            return False
+        if len(domain_counts) < required_domains and candidate_domain in domain_counts:
+            return False
+        comparable_stories = [
+            story
+            for index, story in enumerate(current_stories)
+            if index != replace_index
+        ]
+        return not any(
+            self._stories_are_near_duplicates(candidate, story)
+            for story in comparable_stories
+        )
+
     @staticmethod
     def _story_has_valid_image(story: dict[str, Any]) -> bool:
         return ArticleFetcher._is_valid_image_url(str(story.get("image_url") or ""))
@@ -1809,12 +1968,14 @@ Sports score packet:
         self._ensure_sports_news_stories(stories, articles, story_ids)
         self._ensure_topic_breadth_stories(stories, articles, story_ids)
         stories = self._rebalance_story_order(stories, articles)
+        stories = self._ensure_leading_domain_diversity(stories, articles)
         stories = self._ensure_story_image_coverage(stories, articles)
         stories = self._filter_story_list_for_publish(stories)
         story_ids = {str(story.get("id")) for story in stories if story.get("id")}
         self._ensure_sports_news_stories(stories, articles, story_ids)
         self._ensure_topic_breadth_stories(stories, articles, story_ids)
         stories = self._rebalance_story_order(stories, articles)
+        stories = self._ensure_leading_domain_diversity(stories, articles)
         score_cards = self.sports_score_cards[:6]
         headline, dek, summary, quick_hits = self._grounded_top_level_copy(payload={}, stories=stories)
         sections = self._normalize_sections([], stories, articles)

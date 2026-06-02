@@ -1861,6 +1861,110 @@ def test_story_rebalancing_prevents_sports_from_crowding_the_lead():
     assert sum(1 for story in rebalanced[:8] if story["topic"] == "SPORTS") <= 2
 
 
+def test_leading_domain_diversity_repairs_model_overfocus_on_one_source():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    npr_articles = [
+        ArticleCandidate(
+            id=f"npr-{index}",
+            topic=topic,
+            title=title,
+            source="NPR",
+            url=f"https://www.npr.org/2026/06/02/story-{index}",
+            description="A current source-backed update with enough detail.",
+            score=30 - index,
+        )
+        for index, (topic, title) in enumerate(
+            [
+                ("TOP_NEWS", "Federal court blocks disputed enforcement rule"),
+                ("WORLD", "Ceasefire talks resume after cross-border attacks"),
+                ("BUSINESS", "Labor regulators revise workplace complaint process"),
+                ("TECHNOLOGY", "AI security breach forces new account safeguards"),
+                ("HEALTH", "Hospitals adjust cancer screening guidance"),
+                ("SCIENCE", "Researchers publish new climate risk model"),
+                ("SPORTS", "NBA playoff injury report changes rotation"),
+                ("ENTERTAINMENT", "Studios delay summer film release slate"),
+            ],
+            start=1,
+        )
+    ]
+    replacement_articles = [
+        ArticleCandidate(
+            id="reuters-business",
+            topic="BUSINESS",
+            title="Automakers brace for new supplier strike deadline",
+            source="Reuters",
+            url="https://www.reuters.com/business/autos/supplier-strike",
+            description="A strike deadline could disrupt truck production.",
+            image_url="https://static.reuters.com/images/autos-1200.jpg",
+            score=24,
+        ),
+        ArticleCandidate(
+            id="bbc-world",
+            topic="WORLD",
+            title="European leaders reach security financing agreement",
+            source="BBC",
+            url="https://www.bbc.com/news/world-europe-security-financing",
+            description="The deal affects regional defense planning.",
+            image_url="https://ichef.bbci.co.uk/news/480/security.jpg.webp",
+            score=23,
+        ),
+        ArticleCandidate(
+            id="cnbc-tech",
+            topic="TECHNOLOGY",
+            title="Chipmaker export rules change AI server plans",
+            source="CNBC",
+            url="https://www.cnbc.com/2026/06/02/chipmaker-export-rules.html",
+            description="The policy change affects AI infrastructure spending.",
+            image_url="https://images.cnbc.com/uploads/chips-1200.jpg",
+            score=22,
+        ),
+        ArticleCandidate(
+            id="ap-health",
+            topic="HEALTH",
+            title="FDA approves new hospital infection guidance",
+            source="AP News",
+            url="https://apnews.com/article/fda-hospital-infection-guidance",
+            description="The guidance changes hospital infection-control planning.",
+            image_url="https://dims.apnews.com/dims4/default/health/resize/1200x800.jpg",
+            score=21,
+        ),
+        ArticleCandidate(
+            id="stat-science",
+            topic="SCIENCE",
+            title="Researchers map new cancer vaccine response",
+            source="STAT",
+            url="https://www.statnews.com/2026/06/02/cancer-vaccine-response",
+            description="The study gives researchers new vaccine-response evidence.",
+            image_url="https://www.statnews.com/wp-content/uploads/2026/06/vaccine-1200.jpg",
+            score=20,
+        ),
+        ArticleCandidate(
+            id="guardian-culture",
+            topic="ENTERTAINMENT",
+            title="Studios revise release plans after theater slowdown",
+            source="The Guardian",
+            url="https://www.theguardian.com/film/2026/jun/02/studios-release-plans",
+            description="The shift affects the summer box-office calendar.",
+            image_url="https://i.guim.co.uk/img/media/releases.jpg?width=1200&format=jpg",
+            score=19,
+        ),
+    ]
+    articles = npr_articles + replacement_articles
+    stories = [pipeline._normalized_story_from_article(article) for article in npr_articles]
+
+    repaired = pipeline._ensure_leading_domain_diversity(stories, articles)
+    leading_domains = [
+        DailyBriefPipeline._domain_name(str(story.get("url") or ""))
+        for story in repaired[:8]
+    ]
+
+    assert Counter(leading_domains)["npr.org"] <= 2
+    assert len(set(leading_domains)) >= 4
+    assert {"reuters-business", "bbc-world", "cnbc-tech", "ap-health"}.issubset(
+        {str(story.get("id")) for story in repaired[:8]}
+    )
+
+
 def test_story_rebalancing_removes_near_duplicate_story_slots():
     pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
     articles = [
