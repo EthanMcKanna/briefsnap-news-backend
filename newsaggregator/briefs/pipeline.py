@@ -3372,20 +3372,123 @@ Sports score packet:
             )
         )
 
-    @staticmethod
-    def _parse_json_response(text: str) -> dict[str, Any]:
+    @classmethod
+    def _parse_json_response(cls, text: str) -> dict[str, Any]:
+        last_error: json.JSONDecodeError | None = None
+        for candidate in cls._json_response_candidates(text):
+            for variant in cls._json_parse_variants(candidate):
+                try:
+                    parsed = json.loads(variant)
+                except json.JSONDecodeError as exc:
+                    last_error = exc
+                    try:
+                        parsed = json.loads(variant, strict=False)
+                    except json.JSONDecodeError as strict_exc:
+                        last_error = strict_exc
+                        continue
+                if not isinstance(parsed, dict):
+                    raise ValueError("Gemini JSON response must be an object")
+                return parsed
+        if last_error:
+            raise last_error
+        raise ValueError("Gemini response did not contain a JSON object")
+
+    @classmethod
+    def _json_response_candidates(cls, text: str) -> list[str]:
         cleaned = text.strip()
-        if cleaned.startswith("```"):
-            cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
-            cleaned = re.sub(r"\s*```$", "", cleaned)
-        try:
-            return json.loads(cleaned)
-        except json.JSONDecodeError:
+        candidates = [cleaned]
+
+        fenced = re.search(r"```(?:json)?\s*(.*?)\s*```", cleaned, flags=re.DOTALL | re.IGNORECASE)
+        if fenced:
+            candidates.append(fenced.group(1).strip())
+
+        balanced = cls._first_balanced_json_object(cleaned)
+        if balanced:
+            candidates.append(balanced)
+        else:
             start = cleaned.find("{")
             end = cleaned.rfind("}")
             if start != -1 and end != -1 and end > start:
-                return json.loads(cleaned[start : end + 1])
-            raise
+                candidates.append(cleaned[start : end + 1])
+
+        unique: list[str] = []
+        for candidate in candidates:
+            if candidate and candidate not in unique:
+                unique.append(candidate)
+        return unique
+
+    @staticmethod
+    def _first_balanced_json_object(text: str) -> str | None:
+        start = text.find("{")
+        if start == -1:
+            return None
+
+        depth = 0
+        in_string = False
+        escaped = False
+        for index in range(start, len(text)):
+            char = text[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start : index + 1]
+        return None
+
+    @classmethod
+    def _json_parse_variants(cls, text: str) -> list[str]:
+        stripped = text.strip()
+        variants = [
+            stripped,
+            cls._strip_trailing_json_commas(stripped),
+            cls._insert_missing_line_commas(stripped),
+            cls._strip_trailing_json_commas(cls._insert_missing_line_commas(stripped)),
+        ]
+        unique: list[str] = []
+        for variant in variants:
+            if variant and variant not in unique:
+                unique.append(variant)
+        return unique
+
+    @staticmethod
+    def _strip_trailing_json_commas(text: str) -> str:
+        return re.sub(r",\s*([}\]])", r"\1", text)
+
+    @staticmethod
+    def _insert_missing_line_commas(text: str) -> str:
+        lines = text.splitlines()
+        if len(lines) < 2:
+            return text
+
+        repaired: list[str] = []
+        key_line = re.compile(r'^"[^"\\]*(?:\\.[^"\\]*)*"\s*:')
+        value_endings = ('"', "}", "]", "true", "false", "null")
+        for index, line in enumerate(lines):
+            current = line.rstrip()
+            next_line = lines[index + 1].lstrip() if index + 1 < len(lines) else ""
+            if (
+                current
+                and next_line
+                and not current.endswith((",", "{", "[", ":"))
+                and not next_line.startswith(("}", "]", ","))
+                and key_line.match(next_line)
+                and (current.endswith(value_endings) or current[-1].isdigit())
+            ):
+                current += ","
+            repaired.append(current)
+        return "\n".join(repaired)
 
     def write_artifact(self, brief: dict[str, Any]) -> Path:
         path = BRIEF_DIR / f"daily_brief_{self.today_id}.json"

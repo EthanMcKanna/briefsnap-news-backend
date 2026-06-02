@@ -183,6 +183,50 @@ def article_candidates_for_normalization() -> list[ArticleCandidate]:
     ]
 
 
+def test_parse_json_response_extracts_fenced_json_with_prose():
+    payload = DailyBriefPipeline._parse_json_response(
+        """
+Here is the brief:
+
+```json
+{
+  "headline": "A clear daily brief",
+  "stories": [],
+  "sections": []
+}
+```
+
+Done.
+""".strip()
+    )
+
+    assert payload["headline"] == "A clear daily brief"
+
+
+def test_parse_json_response_repairs_missing_line_commas_and_trailing_commas():
+    payload = DailyBriefPipeline._parse_json_response(
+        """
+{
+  "headline": "A clear daily brief"
+  "dek": "The missing comma is repaired",
+  "stories": [],
+  "sections": [],
+}
+""".strip()
+    )
+
+    assert payload["dek"] == "The missing comma is repaired"
+    assert payload["stories"] == []
+
+
+def test_parse_json_response_tolerates_unescaped_newlines_in_strings():
+    payload = DailyBriefPipeline._parse_json_response(
+        '{"headline": "A clear daily brief", "summary": "Line one\nLine two", "stories": []}'
+    )
+
+    assert payload["summary"] == "Line one\nLine two"
+
+
 def test_parse_score_event_keeps_verification_metadata():
     score = DailyBriefPipeline._parse_score_event(
         league="NBA",
