@@ -1274,6 +1274,7 @@ Sports score packet:
         self._ensure_topic_breadth_stories(normalized_stories, articles, story_ids)
         normalized_stories = self._rebalance_story_order(normalized_stories, articles)
         normalized_stories = self._ensure_leading_domain_diversity(normalized_stories, articles)
+        normalized_stories = self._ensure_visible_source_supported_topics(normalized_stories, articles)
 
         now = datetime.now(timezone.utc)
         sections = self._normalize_sections(payload.get("sections", []), normalized_stories, articles)
@@ -1557,6 +1558,154 @@ Sports score packet:
                 continue
             story_ids.add(article.id)
             stories.append(self._normalized_story_from_article(article))
+
+    def _ensure_visible_source_supported_topics(
+        self,
+        stories: list[dict[str, Any]],
+        articles: list[ArticleCandidate],
+        *,
+        max_visible: int = 12,
+    ) -> list[dict[str, Any]]:
+        repaired = self._dedupe_story_list(list(stories))[:18]
+        if not repaired:
+            return repaired
+
+        topic_groups = self._topic_article_groups(articles)
+        supported_topics = [
+            topic
+            for topic in TOPIC_PRIORITY
+            if topic != "ENTERTAINMENT"
+            and len(topic_groups.get(topic, [])) >= self._minimum_sources_for_topic(topic)
+        ]
+        if not supported_topics:
+            return repaired
+
+        target_supported_topics = min(MIN_V8_VISIBLE_STORY_TOPICS, len(supported_topics))
+        protected_required_topics = {
+            topic
+            for topic in ("HEALTH", "SCIENCE")
+            if topic in supported_topics
+        }
+        story_ids = {str(story.get("id") or "") for story in repaired if story.get("id")}
+
+        def visible_window() -> list[dict[str, Any]]:
+            return repaired[: min(max_visible, len(repaired))]
+
+        def visible_topics() -> set[str]:
+            topics = {
+                self._normalize_topic(story.get("topic"))
+                for story in visible_window()
+                if story.get("topic")
+            }
+            topics.discard("")
+            return topics
+
+        def visible_supported_count() -> int:
+            topics = visible_topics()
+            return sum(1 for topic in supported_topics if topic in topics)
+
+        def candidate_for_topic(topic: str) -> tuple[dict[str, Any], int | None] | None:
+            for index, story in enumerate(repaired[max_visible:], start=max_visible):
+                if self._normalize_topic(story.get("topic")) != topic:
+                    continue
+                if not self._story_passes_editorial_gate(story):
+                    continue
+                return story, index
+
+            for article in topic_groups.get(topic, []):
+                if article.id in story_ids:
+                    continue
+                if topic == "SPORTS" and not self._is_high_signal_sports_candidate(
+                    title=article.title,
+                    source=article.source,
+                    url=article.url,
+                    description=article.description or article.content[:400],
+                ):
+                    continue
+                story = self._normalized_story_from_article(article)
+                if not self._story_passes_editorial_gate(story):
+                    continue
+                if any(self._stories_are_near_duplicates(story, existing) for existing in repaired):
+                    continue
+                return story, None
+            return None
+
+        def replacement_index() -> int | None:
+            window_size = min(max_visible, len(repaired))
+            if len(repaired) < max_visible:
+                return None
+
+            counts = Counter(
+                self._normalize_topic(story.get("topic"))
+                for story in repaired[:window_size]
+                if story.get("topic")
+            )
+            indexes = list(range(window_size - 1, -1, -1))
+            preferred_indexes = [index for index in indexes if index >= 8] + [
+                index for index in indexes if 3 <= index < 8
+            ]
+
+            for index in preferred_indexes:
+                topic = self._normalize_topic(repaired[index].get("topic"))
+                if topic in protected_required_topics and counts.get(topic, 0) <= 1:
+                    continue
+                if topic == "TOP_NEWS" and counts.get(topic, 0) <= 2:
+                    continue
+                if counts.get(topic, 0) > 1:
+                    return index
+
+            for index in preferred_indexes:
+                topic = self._normalize_topic(repaired[index].get("topic"))
+                if topic in protected_required_topics or topic == "TOP_NEWS":
+                    continue
+                return index
+            return None
+
+        missing_topics = [
+            topic
+            for topic in ("HEALTH", "SCIENCE")
+            if topic in supported_topics and topic not in visible_topics()
+        ]
+        missing_topics.extend(
+            topic
+            for topic in supported_topics
+            if topic not in visible_topics()
+            and topic not in missing_topics
+        )
+
+        for topic in missing_topics:
+            if topic not in {"HEALTH", "SCIENCE"} and visible_supported_count() >= target_supported_topics:
+                break
+            if topic in visible_topics():
+                continue
+
+            candidate = candidate_for_topic(topic)
+            if not candidate:
+                continue
+            candidate_story, source_index = candidate
+
+            if len(repaired) < max_visible:
+                if source_index is not None:
+                    repaired.pop(source_index)
+                repaired.append(candidate_story)
+                story_ids.add(str(candidate_story.get("id") or ""))
+                continue
+
+            replace_index = replacement_index()
+            if replace_index is None:
+                continue
+
+            displaced = repaired[replace_index]
+            if source_index is not None:
+                repaired[replace_index] = candidate_story
+                repaired[source_index] = displaced
+            else:
+                repaired[replace_index] = candidate_story
+                if displaced.get("id") and len(repaired) < 18:
+                    repaired.append(displaced)
+            story_ids.add(str(candidate_story.get("id") or ""))
+
+        return self._dedupe_story_list(repaired[:18])
 
     def _rebalance_story_order(
         self,
@@ -1976,6 +2125,7 @@ Sports score packet:
         self._ensure_topic_breadth_stories(stories, articles, story_ids)
         stories = self._rebalance_story_order(stories, articles)
         stories = self._ensure_leading_domain_diversity(stories, articles)
+        stories = self._ensure_visible_source_supported_topics(stories, articles)
         score_cards = self.sports_score_cards[:6]
         headline, dek, summary, quick_hits = self._grounded_top_level_copy(payload={}, stories=stories)
         sections = self._normalize_sections([], stories, articles)

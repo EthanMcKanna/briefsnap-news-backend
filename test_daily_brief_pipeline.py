@@ -1965,6 +1965,139 @@ def test_leading_domain_diversity_repairs_model_overfocus_on_one_source():
     )
 
 
+def test_visible_source_supported_topic_repair_promotes_science_into_first_twelve():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    articles = [
+        ArticleCandidate(
+            id=f"top-{index}",
+            topic="TOP_NEWS",
+            title=f"Federal policy update changes agency deadline {index}",
+            source="Reuters" if index == 1 else "AP News",
+            url=f"https://www.reuters.com/world/us/policy-deadline-{index}",
+            description="A current public-impact update with concrete details.",
+            score=30 - index,
+        )
+        for index in range(1, 4)
+    ]
+    articles.extend(
+        [
+            ArticleCandidate(
+                id="world-1",
+                topic="WORLD",
+                title="European leaders agree new security financing plan",
+                source="BBC",
+                url="https://www.bbc.com/news/world-europe-security-financing",
+                description="The agreement changes regional defense planning.",
+                score=25,
+            ),
+            ArticleCandidate(
+                id="world-2",
+                topic="WORLD",
+                title="Ukraine aid talks restart before summit",
+                source="AP News",
+                url="https://apnews.com/article/ukraine-aid-talks",
+                description="The talks affect diplomatic planning before the summit.",
+                score=24,
+            ),
+            ArticleCandidate(
+                id="business-1",
+                topic="BUSINESS",
+                title="Automaker supplier strike deadline nears",
+                source="Reuters",
+                url="https://www.reuters.com/business/autos/supplier-strike-deadline",
+                description="The deadline could disrupt truck production.",
+                score=23,
+            ),
+            ArticleCandidate(
+                id="business-2",
+                topic="BUSINESS",
+                title="Bond market warning changes inflation outlook",
+                source="CNBC",
+                url="https://www.cnbc.com/2026/06/02/bond-market-warning.html",
+                description="The shift affects borrowing costs and investor expectations.",
+                score=22,
+            ),
+            ArticleCandidate(
+                id="tech-1",
+                topic="TECHNOLOGY",
+                title="Chip export rules change AI server plans",
+                source="The Verge",
+                url="https://www.theverge.com/2026/6/2/chip-export-rules-ai-servers",
+                description="The rules affect AI infrastructure buildouts.",
+                score=21,
+            ),
+            ArticleCandidate(
+                id="tech-2",
+                topic="TECHNOLOGY",
+                title="Cybersecurity flaw forces cloud account resets",
+                source="TechCrunch",
+                url="https://techcrunch.com/2026/06/02/cloud-account-resets",
+                description="The flaw changes account-security plans for enterprise teams.",
+                score=20,
+            ),
+            ArticleCandidate(
+                id="health-1",
+                topic="HEALTH",
+                title="Hospitals prepare for summer virus uptick",
+                source="STAT",
+                url="https://www.statnews.com/2026/06/02/summer-virus-hospitals",
+                description="Hospitals are adjusting staffing plans as seasonal indicators rise.",
+                score=19,
+            ),
+            ArticleCandidate(
+                id="sports-1",
+                topic="SPORTS",
+                title="Thunder injury changes NBA Finals rotation",
+                source="ESPN",
+                url="https://www.espn.com/nba/story/_/id/thunder-finals-rotation",
+                description="The injury report changes rotations before the next game.",
+                score=18,
+            ),
+            ArticleCandidate(
+                id="sports-2",
+                topic="SPORTS",
+                title="Mariners winning streak shifts MLB playoff race",
+                source="ESPN",
+                url="https://www.espn.com/mlb/story/_/id/mariners-winning-streak",
+                description="The streak changes the division race and wild-card picture.",
+                score=17,
+            ),
+            ArticleCandidate(
+                id="science-1",
+                topic="SCIENCE",
+                title="Researchers publish new ocean heat risk model",
+                source="ScienceAlert",
+                url="https://www.sciencealert.com/ocean-heat-risk-model",
+                description="The model gives researchers new evidence for coastal risk planning.",
+                score=16,
+            ),
+            ArticleCandidate(
+                id="science-2",
+                topic="SCIENCE",
+                title="NASA climate data updates flood projections",
+                source="NASA",
+                url="https://www.nasa.gov/science/climate-data-flood-projections",
+                description="The data changes flood projections used by planners.",
+                score=15,
+            ),
+        ]
+    )
+    model_stories = [
+        pipeline._normalized_story_from_article(article)
+        for article in articles
+        if article.topic != "SCIENCE"
+    ][:12]
+
+    repaired = pipeline._ensure_visible_source_supported_topics(model_stories, articles)
+    visible_topics = {
+        DailyBriefPipeline._normalize_topic(story.get("topic"))
+        for story in repaired[:12]
+    }
+
+    assert "SCIENCE" in visible_topics
+    assert {"science-1", "science-2"} & {str(story.get("id")) for story in repaired[:12]}
+
+
 def test_story_rebalancing_removes_near_duplicate_story_slots():
     pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
     articles = [
