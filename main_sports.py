@@ -11,6 +11,7 @@ from newsaggregator.fetchers.sports_fetcher import APP_NEWS_LEAGUE_CODES, Sports
 from newsaggregator.storage.sports_storage import SportsStorage
 from newsaggregator.processors.sports_news_summarizer import SportsNewsSummarizer
 from newsaggregator.processors.game_summary_processor import GameSummaryProcessor
+from newsaggregator.briefs.pipeline import DailyBriefPipeline, PipelineOptions
 from newsaggregator.config.settings import DATA_DIR
 
 NEWS_SUMMARY_STALE_HOURS = 5
@@ -46,6 +47,26 @@ def _latest_news_age_hours(news_summaries):
     if not latest_timestamp:
         return None
     return (datetime.now(timezone.utc) - latest_timestamp).total_seconds() / 3600
+
+
+def _refresh_daily_brief_sports_scores() -> None:
+    """Keep the home brief score cards fresh whenever sports data updates."""
+    try:
+        refresh_stats = DailyBriefPipeline(
+            PipelineOptions(dry_run=True, publish=False)
+        ).refresh_latest_firestore_sports_scores()
+    except Exception as exc:
+        print(f"⚠️ Daily brief sports score refresh failed: {exc}")
+        return
+
+    if refresh_stats.get("success"):
+        print(
+            "✅ Daily brief sports scores refreshed "
+            f"for {refresh_stats.get('doc_id')} "
+            f"({refresh_stats.get('scores_count', 0)} game cards)"
+        )
+    else:
+        print(f"⚠️ Daily brief sports score refresh skipped: {refresh_stats.get('error')}")
 
 
 def main():
@@ -159,6 +180,9 @@ def main():
             archived_finals = SportsStorage.archive_stale_final_scores()
             if archived_finals:
                 print(f"✅ Archived {archived_finals} stale final score(s)")
+
+            print("\n====== Refreshing Daily Brief Sports Scores ======")
+            _refresh_daily_brief_sports_scores()
             
             # Process game summaries after storing sports data
             print("\n====== Processing Game Summaries ======")
