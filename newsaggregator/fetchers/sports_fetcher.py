@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
+import re
 from typing import Dict, List, Optional, Sequence
 
 from newsaggregator.config.settings import (
@@ -30,6 +31,55 @@ APP_NEWS_LEAGUE_CODES = ('nfl', 'nba', 'mlb', 'nhl', 'ncaaf', 'ncaab', 'mls')
 
 SCOREBOARD_TEMPLATE = "https://site.api.espn.com/apis/site/v2/sports/{path}/scoreboard"
 NEWS_TEMPLATE = "https://site.api.espn.com/apis/site/v2/sports/{path}/news"
+SPORTS_NEWS_MAX_AGE_HOURS = 72
+SPORTS_NEWS_LOW_SIGNAL_PATTERNS = (
+    "betting",
+    "odds",
+    "parlay",
+    "picks",
+    "predictions",
+    "power rankings",
+    "rankings",
+    "way-too-early",
+    "fantasy",
+    "dfs",
+    "mock draft",
+)
+SPORTS_NEWS_HARD_LOW_SIGNAL_PATTERNS = (
+    "betting",
+    "odds",
+    "parlay",
+    "picks",
+    "predictions",
+    "dfs",
+)
+SPORTS_NEWS_HIGH_SIGNAL_KEYWORDS = (
+    "trade",
+    "traded",
+    "signs",
+    "signed",
+    "contract",
+    "extension",
+    "injury",
+    "injured",
+    "final",
+    "finals",
+    "playoff",
+    "championship",
+    "title",
+    "hired",
+    "fired",
+    "coach",
+    "suspended",
+    "investigation",
+    "lawsuit",
+    "transfer",
+    "commits",
+    "committed",
+    "retires",
+    "dies",
+    "death",
+)
 
 
 class SportsFetcher:
@@ -383,11 +433,12 @@ class SportsFetcher:
         if not SPORTS_NEWS_SETTINGS.get('enabled'):
             return {}
         limit = SPORTS_NEWS_SETTINGS.get('limit', 5)
+        fetch_limit = max(limit, min(limit * 3, 20))
         news: Dict[str, List[Dict]] = {}
         for league in leagues:
             if not league:
                 continue
-            articles = self._get_news_for_league(league, limit)
+            articles = self._get_news_for_league(league, fetch_limit, display_limit=limit)
             if articles:
                 news[league.code] = articles
         return news
@@ -403,7 +454,13 @@ class SportsFetcher:
             seen.add(league.code)
         return leagues
 
-    def _get_news_for_league(self, league: LeagueDescriptor, limit: int) -> List[Dict]:
+    def _get_news_for_league(
+        self,
+        league: LeagueDescriptor,
+        limit: int,
+        *,
+        display_limit: Optional[int] = None,
+    ) -> List[Dict]:
         try:
             payload = self.client.get_json(NEWS_TEMPLATE.format(path=league.scoreboard_path), params={'limit': limit})
         except Exception:
@@ -425,7 +482,116 @@ class SportsFetcher:
                 'images': article.get('images'),
                 'source': source or 'ESPN',
             })
-        return articles
+        return self._select_high_signal_news_articles(articles, limit=display_limit or limit)
+
+    @classmethod
+    def _select_high_signal_news_articles(cls, articles: List[Dict], *, limit: int) -> List[Dict]:
+        seen = set()
+        scored_articles = []
+        fallback_articles = []
+        now = datetime.now(timezone.utc)
+
+        for index, article in enumerate(articles):
+            headline = str(article.get('headline') or '').strip()
+            link = str(article.get('link') or '').strip()
+            if not headline or not link:
+                continue
+
+            dedupe_key = cls._news_dedupe_key(headline, link)
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+
+            published_at = cls._parse_news_datetime(article.get('published'))
+            age_hours = None
+            if published_at:
+                age_hours = (now - published_at).total_seconds() / 3600
+                if age_hours < -1 or age_hours > SPORTS_NEWS_MAX_AGE_HOURS:
+                    continue
+
+            if cls._is_hard_low_signal_news(article):
+                continue
+
+            fallback_articles.append(article)
+            score = cls._sports_news_article_score(article, age_hours=age_hours, original_index=index)
+            if score < 0:
+                continue
+            scored_articles.append((score, index, article))
+
+        scored_articles.sort(key=lambda item: (-item[0], item[1]))
+        selected = [article for _, _, article in scored_articles[:limit]]
+        if selected:
+            return selected
+        return fallback_articles[:limit]
+
+    @staticmethod
+    def _parse_news_datetime(value: object) -> Optional[datetime]:
+        if isinstance(value, datetime):
+            date = value
+        elif isinstance(value, str) and value.strip():
+            try:
+                date = datetime.fromisoformat(value.strip().replace('Z', '+00:00'))
+            except ValueError:
+                return None
+        else:
+            return None
+
+        if date.tzinfo is None:
+            return date.replace(tzinfo=timezone.utc)
+        return date.astimezone(timezone.utc)
+
+    @staticmethod
+    def _news_dedupe_key(headline: str, link: str) -> str:
+        normalized_headline = re.sub(r"[^a-z0-9]+", " ", headline.lower()).strip()
+        if normalized_headline:
+            return normalized_headline
+        return link.split("?")[0].lower()
+
+    @staticmethod
+    def _sports_news_article_score(
+        article: Dict,
+        *,
+        age_hours: Optional[float],
+        original_index: int,
+    ) -> float:
+        headline = str(article.get('headline') or '')
+        description = str(article.get('description') or '')
+        text = f"{headline} {description}".lower()
+
+        score = 100 - min(original_index, 20)
+        if age_hours is not None:
+            score += max(0, 48 - age_hours)
+
+        high_signal_matches = sum(1 for keyword in SPORTS_NEWS_HIGH_SIGNAL_KEYWORDS if keyword in text)
+        score += min(high_signal_matches, 4) * 12
+
+        low_signal_matches = sum(1 for pattern in SPORTS_NEWS_LOW_SIGNAL_PATTERNS if pattern in text)
+        if low_signal_matches and high_signal_matches == 0:
+            score -= 80
+        elif low_signal_matches:
+            score -= 18
+
+        if len(headline.split()) < 5:
+            score -= 10
+        if description.strip():
+            score += 6
+        if article.get('images'):
+            score += 3
+        if article.get('source'):
+            score += 2
+
+        return score
+
+    @staticmethod
+    def _is_hard_low_signal_news(article: Dict) -> bool:
+        headline = str(article.get('headline') or '')
+        description = str(article.get('description') or '')
+        text = f"{headline} {description}".lower()
+        has_high_signal = any(keyword in text for keyword in SPORTS_NEWS_HIGH_SIGNAL_KEYWORDS)
+        return (
+            not has_high_signal
+            and any(pattern in text for pattern in SPORTS_NEWS_HARD_LOW_SIGNAL_PATTERNS)
+        )
 
     def _fallback_leagues(self) -> List[LeagueDescriptor]:
         leagues: List[LeagueDescriptor] = []

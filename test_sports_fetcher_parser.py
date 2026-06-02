@@ -1,5 +1,7 @@
 """Unit tests for the revamped SportsFetcher parsing helpers."""
 
+from datetime import datetime, timedelta, timezone
+
 from newsaggregator.fetchers.sports_fetcher import SportsFetcher
 from newsaggregator.fetchers.espn_discovery import LeagueDescriptor
 
@@ -114,3 +116,86 @@ def test_parse_event_extracts_rich_metadata():
     assert game['leaders']['Points'][0]['value'] == 29
     assert game['status'] == 'Final'
     assert game['formatted_date'] == '2024-04-10'
+
+
+def test_select_high_signal_news_articles_filters_stale_low_signal_items():
+    now = datetime.now(timezone.utc)
+    articles = [
+        {
+            "headline": "NBA betting odds and parlay picks for tonight",
+            "description": "A betting rail with no confirmed basketball development.",
+            "link": "https://espn.com/nba/betting",
+            "published": (now - timedelta(hours=1)).isoformat(),
+        },
+        {
+            "headline": "Star guard signs four-year contract extension before Finals",
+            "description": "The confirmed deal changes the team's roster outlook.",
+            "link": "https://espn.com/nba/contract-extension",
+            "published": (now - timedelta(hours=3)).isoformat(),
+            "images": [{"url": "https://example.com/photo.jpg"}],
+            "source": "ESPN",
+        },
+        {
+            "headline": "Power rankings after the latest playoff games",
+            "description": "A ranking roundup with limited new reporting.",
+            "link": "https://espn.com/nba/power-rankings",
+            "published": (now - timedelta(hours=2)).isoformat(),
+        },
+        {
+            "headline": "Veteran coach fired after playoff exit",
+            "description": "The franchise confirmed the coaching change today.",
+            "link": "https://espn.com/nba/coach-fired",
+            "published": (now - timedelta(hours=4)).isoformat(),
+            "source": "ESPN",
+        },
+        {
+            "headline": "Old trade deadline tracker",
+            "description": "This item is too old for a current sports rail.",
+            "link": "https://espn.com/nba/old-tracker",
+            "published": (now - timedelta(days=5)).isoformat(),
+        },
+    ]
+
+    selected = SportsFetcher._select_high_signal_news_articles(articles, limit=2)
+    selected_headlines = [article["headline"] for article in selected]
+
+    assert selected_headlines == [
+        "Star guard signs four-year contract extension before Finals",
+        "Veteran coach fired after playoff exit",
+    ]
+
+
+def test_select_high_signal_news_articles_keeps_fresh_fallback_when_feed_is_generic():
+    now = datetime.now(timezone.utc)
+    articles = [
+        {
+            "headline": "MLS weekend schedule and viewing guide",
+            "description": "A fresh schedule item from ESPN's league feed.",
+            "link": "https://espn.com/mls/schedule-guide",
+            "published": (now - timedelta(hours=2)).isoformat(),
+        },
+        {
+            "headline": "MLS weekend schedule and viewing guide",
+            "description": "Duplicate item should be collapsed.",
+            "link": "https://espn.com/mls/schedule-guide?duplicate=1",
+            "published": (now - timedelta(hours=2)).isoformat(),
+        },
+        {
+            "headline": "MLS betting odds and picks for this weekend",
+            "description": "Fresh betting filler should not be used as a fallback.",
+            "link": "https://espn.com/mls/betting-odds",
+            "published": (now - timedelta(hours=1)).isoformat(),
+        },
+        {
+            "headline": "Old MLS betting picks",
+            "description": "Too old to fall back to.",
+            "link": "https://espn.com/mls/old-picks",
+            "published": (now - timedelta(days=5)).isoformat(),
+        },
+    ]
+
+    selected = SportsFetcher._select_high_signal_news_articles(articles, limit=3)
+
+    assert [article["headline"] for article in selected] == [
+        "MLS weekend schedule and viewing guide"
+    ]
