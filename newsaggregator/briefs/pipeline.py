@@ -3157,6 +3157,7 @@ Sports score packet:
             "success": True,
             "doc_id": doc.id,
             "scores_count": len(score_cards),
+            "score_ids": [str(score.get("id") or "") for score in score_cards if score.get("id")],
             "refreshed_at": refreshed_at.isoformat(),
             "verified_at": metadata.get("sports_scores_verified_at"),
         }

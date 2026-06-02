@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from newsaggregator.briefs.pipeline import ArticleCandidate, DailyBriefPipeline, PipelineOptions, TOPICS
 from newsaggregator.fetchers.article_fetcher import ArticleFetcher
+from verify_daily_brief_release import audit_daily_brief
 
 
 SAMPLE_SCORE_EVENT = {
@@ -218,6 +219,44 @@ def test_sports_score_metadata_uses_latest_card_verification():
         "sports_scores_verified_at": "2026-05-12T04:10:12+00:00",
         "sports_scores_source": "ESPN",
     }
+
+
+def test_release_gate_can_audit_against_already_refreshed_score_ids():
+    now = datetime(2026, 5, 12, 4, 30, tzinfo=timezone.utc)
+    score = {
+        "id": "nba-401871329",
+        "league": "NBA",
+        "display": "Oklahoma City Thunder at Los Angeles Lakers (10:55 - 3rd)",
+        "source": "ESPN",
+        "source_url": "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard",
+        "verified_at": now.isoformat(),
+        "expires_at": (now + timedelta(minutes=15)).isoformat(),
+    }
+    brief = valid_quality_brief()
+    brief.update(
+        {
+            "generated_at": now.isoformat(),
+            "sports_scores": [score],
+            **DailyBriefPipeline._sports_scores_metadata([score]),
+        }
+    )
+
+    with patch("verify_daily_brief_release.stale_active_final_score_ids", return_value=[]), patch(
+        "verify_daily_brief_release.DailyBriefPipeline._fetch_top_sports_scores"
+    ) as fetch_scores:
+        issues, summary = audit_daily_brief(
+            brief,
+            now=now,
+            max_age=timedelta(hours=30),
+            max_sports_age=timedelta(minutes=20),
+            max_final_score_age=timedelta(hours=6),
+            check_current_espn=True,
+            current_score_ids=["nba-401871329"],
+        )
+
+    fetch_scores.assert_not_called()
+    assert summary["current_espn_score_ids"] == ["nba-401871329"]
+    assert not any("sports scores do not match fresh ESPN selector" in issue for issue in issues)
 
 
 def test_quality_gate_rejects_sports_scores_without_source_metadata():

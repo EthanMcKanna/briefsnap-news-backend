@@ -82,6 +82,7 @@ def audit_daily_brief(
     max_sports_age: timedelta,
     max_final_score_age: timedelta,
     check_current_espn: bool,
+    current_score_ids: list[str] | None = None,
 ) -> tuple[list[str], dict[str, Any]]:
     issues: list[str] = []
     stories = [story for story in brief.get("stories", []) if isinstance(story, dict)]
@@ -148,10 +149,11 @@ def audit_daily_brief(
             "sports scores include expired entries: " + ", ".join(non_displayable_scores)
         )
 
-    current_score_ids: list[str] = []
+    current_score_ids = current_score_ids or []
     if check_current_espn:
-        current_scores = pipeline._fetch_top_sports_scores()
-        current_score_ids = [str(score.get("id") or "") for score in current_scores if score.get("id")]
+        if not current_score_ids:
+            current_scores = pipeline._fetch_top_sports_scores()
+            current_score_ids = [str(score.get("id") or "") for score in current_scores if score.get("id")]
         stored_score_ids = [str(score.get("id") or "") for score in scores if score.get("id")]
         if current_score_ids and stored_score_ids != current_score_ids:
             issues.append(
@@ -218,6 +220,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-final-score-age-hours", type=float, default=6)
     parser.add_argument("--skip-current-espn", action="store_true")
     parser.add_argument(
+        "--skip-sports-score-refresh",
+        action="store_true",
+        help="Do not refresh the latest brief's ESPN score cards before auditing",
+    )
+    parser.add_argument(
         "--skip-stale-score-cleanup",
         action="store_true",
         help="Do not archive stale final sports_games rows before auditing",
@@ -236,6 +243,25 @@ def main() -> int:
         if archived:
             print(f"Archived {archived} stale final sports score row(s) before audit")
 
+    current_score_ids: list[str] | None = None
+    if not args.skip_sports_score_refresh and not args.skip_current_espn and not args.doc_id:
+        refresh_stats = DailyBriefPipeline(
+            PipelineOptions(dry_run=True, publish=False)
+        ).refresh_latest_firestore_sports_scores()
+        if refresh_stats.get("success"):
+            current_score_ids = [
+                str(score_id)
+                for score_id in refresh_stats.get("score_ids", [])
+                if str(score_id)
+            ]
+            print(
+                "Refreshed daily brief sports scores before audit: "
+                f"daily_briefs/{refresh_stats.get('doc_id')} "
+                f"({refresh_stats.get('scores_count', 0)} game cards)"
+            )
+        else:
+            print(f"Sports score refresh skipped before audit: {refresh_stats.get('error')}")
+
     doc_id, brief = latest_daily_brief(args.doc_id)
     issues, summary = audit_daily_brief(
         brief,
@@ -244,6 +270,7 @@ def main() -> int:
         max_sports_age=timedelta(minutes=args.max_sports_age_minutes),
         max_final_score_age=timedelta(hours=args.max_final_score_age_hours),
         check_current_espn=not args.skip_current_espn,
+        current_score_ids=current_score_ids,
     )
 
     print(f"Checked daily_briefs/{doc_id} at {now.isoformat()}")
