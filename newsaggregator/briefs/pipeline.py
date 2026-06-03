@@ -1442,6 +1442,7 @@ Sports score packet:
         story = story or {}
         source = _clean_text(article.source or story.get("source"))
         title = self._clean_title(article.title or story.get("title"), source=source)
+        topic = self._normalize_topic(article.topic or story.get("topic"))
         summary = self._clean_description(story.get("summary") or "", title=title, source=source)
         summary = _collapse_visible_truncation(summary)
         if self._is_bad_story_summary(
@@ -1462,9 +1463,8 @@ Sports score packet:
         if self._is_bad_story_summary(summary, title=title, source=source, url=article.url):
             summary = ""
         if not summary:
-            summary = title
+            summary = self._title_based_summary(title=title, topic=topic, source=source)
 
-        topic = self._normalize_topic(article.topic or story.get("topic"))
         summary_text = _trim_words(summary, 28)
         if _word_count(summary_text) > 28:
             summary_text = _trim_words(summary, 27)
@@ -1517,6 +1517,17 @@ Sports score packet:
         if topic == "ENTERTAINMENT":
             return "It changes the culture and media conversation."
         return "It gives readers useful context for the day."
+
+    @classmethod
+    def _title_based_summary(cls, *, title: str, topic: str, source: str = "") -> str:
+        title = _clean_text(title)
+        topic_name = cls._topic_name(topic).lower()
+        source_name = _clean_text(source)
+        source_clause = f" from {source_name}" if source_name and len(source_name.split()) <= 4 else ""
+        return _trim_words(
+            f"This {topic_name} update{source_clause} focuses on {title}.",
+            28,
+        )
 
     def _ensure_sports_news_stories(
         self,

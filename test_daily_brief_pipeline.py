@@ -899,7 +899,8 @@ def test_story_normalization_drops_scraped_source_boilerplate():
 
     story = pipeline._normalized_story_from_article(article)
 
-    assert story["summary"] == article.title
+    assert story["summary"].startswith("This world update from AP News focuses on Malaysia enforces")
+    assert story["summary"] != article.title
     assert not DailyBriefPipeline._is_unpolished_copy(story["summary"])
     assert DailyBriefPipeline._clean_description(
         "Trump floats MAGA rally instead of concert toggle caption Alex Brandon/AP",
@@ -1069,7 +1070,10 @@ def test_story_normalization_rejects_scraped_noun_phrase_summary():
 
     story = pipeline._normalized_story_from_article(article)
 
-    assert story["summary"] == "NASA Testing Wastewater Treatment Facility for Future Moon Base"
+    assert story["summary"].startswith(
+        "This science update from NASA focuses on NASA Testing Wastewater"
+    )
+    assert story["summary"] != "NASA Testing Wastewater Treatment Facility for Future Moon Base"
     assert "that can help prepare" not in story["summary"]
 
     possessive_article = ArticleCandidate(
