@@ -220,7 +220,13 @@ SPORTS_SECTION_DRIFT_TERMS: tuple[str, ...] = (
 )
 
 SPORTS_HARD_DRIFT_MARKERS: tuple[str, ...] = (
+    "brain disorder",
+    "brain disorders",
     "free trade",
+    "genetic therapy",
+    "genetic therapies",
+    "neurological disease",
+    "neurological diseases",
     "trade minister",
     "trade pact",
     "tariff",
@@ -3890,8 +3896,11 @@ Sports score packet:
         )
         has_sports_signal = cls._contains_any_term(text, SPORTS_SIGNAL_TERMS)
         has_section_drift = cls._contains_any_term(text, SPORTS_SECTION_DRIFT_TERMS)
+        has_health_drift = cls._contains_any_term(text, HEALTH_SIGNAL_TERMS)
 
-        if any(marker in text for marker in SPORTS_HARD_DRIFT_MARKERS) and not is_primary_sports_source:
+        if any(marker in text for marker in SPORTS_HARD_DRIFT_MARKERS):
+            return False
+        if has_health_drift and not has_sports_signal:
             return False
         if has_section_drift and not (is_primary_sports_source or has_sports_signal):
             return False

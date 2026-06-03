@@ -3463,6 +3463,15 @@ def test_sports_story_filter_rejects_political_drift_without_word_substring_fals
         url="https://www.bbc.com/news/articles/canada-usmca-renewal",
         description="A trade minister asked counterparts to renew the USMCA trade pact.",
     )
+    assert not DailyBriefPipeline._is_high_signal_sports_candidate(
+        title="A science powerhouse bets on genetic therapy to beat brain disorders",
+        source="The Athletic",
+        url="https://www.nytimes.com/athletic/6500000/2026/06/03/brain-health-therapy/",
+        description=(
+            "The Allen Institute launched a Brain Health accelerator to develop "
+            "genetic therapies for neurological diseases."
+        ),
+    )
 
 
 def test_sports_gate_accepts_athletic_paths_on_general_news_domains():
