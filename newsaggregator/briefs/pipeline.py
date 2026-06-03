@@ -695,6 +695,10 @@ class PipelineOptions:
     allow_fallback_publish: bool = os.environ.get("BRIEFSNAP_ALLOW_FALLBACK_PUBLISH", "").lower() == "true"
 
 
+class GeneratedCandidateQualityError(ValueError):
+    """Raised when a parseable model response fails the publish quality gate."""
+
+
 TOPICS: tuple[TopicSource, ...] = (
     TopicSource(
         code="TOP_NEWS",
@@ -1178,6 +1182,8 @@ class DailyBriefPipeline:
         source_packet_models = self._unique_models(
             (self.options.model, DEFAULT_MODEL, FAST_MODEL, GROUNDING_MODEL, QUALITY_MODEL)
         )
+        max_quality_failures = self._max_generated_candidate_quality_failures()
+        quality_failures = 0
 
         last_error: Exception | None = None
         grounded_config = {
@@ -1207,6 +1213,19 @@ class DailyBriefPipeline:
                             f"{model}-search-grounded",
                         )
                     except Exception as exc:
+                        if isinstance(exc, GeneratedCandidateQualityError):
+                            quality_failures += 1
+                            last_error = exc
+                            print(
+                                "[WARN] Generated candidate failed quality gate "
+                                f"({quality_failures}/{max_quality_failures}): {exc}"
+                            )
+                            if quality_failures >= max_quality_failures:
+                                raise RuntimeError(
+                                    "Generated brief quality gate failed after "
+                                    f"{quality_failures} candidate(s): {exc}"
+                                ) from exc
+                            break
                         print(f"[WARN] Gemini search-grounded model {model} via {client_label} failed: {exc}")
                         last_error = exc
                         if attempt >= 2 or not self._should_retry_generation(exc):
@@ -1242,6 +1261,19 @@ class DailyBriefPipeline:
                             f"{model}-search-grounded-text",
                         )
                     except Exception as exc:
+                        if isinstance(exc, GeneratedCandidateQualityError):
+                            quality_failures += 1
+                            last_error = exc
+                            print(
+                                "[WARN] Generated candidate failed quality gate "
+                                f"({quality_failures}/{max_quality_failures}): {exc}"
+                            )
+                            if quality_failures >= max_quality_failures:
+                                raise RuntimeError(
+                                    "Generated brief quality gate failed after "
+                                    f"{quality_failures} candidate(s): {exc}"
+                                ) from exc
+                            continue
                         print(f"[WARN] Gemini search-grounded text model {model} via {client_label} failed: {exc}")
                         last_error = exc
 
@@ -1274,6 +1306,19 @@ class DailyBriefPipeline:
                             f"{model}-source-packet",
                         )
                     except Exception as exc:
+                        if isinstance(exc, GeneratedCandidateQualityError):
+                            quality_failures += 1
+                            last_error = exc
+                            print(
+                                "[WARN] Generated candidate failed quality gate "
+                                f"({quality_failures}/{max_quality_failures}): {exc}"
+                            )
+                            if quality_failures >= max_quality_failures:
+                                raise RuntimeError(
+                                    "Generated brief quality gate failed after "
+                                    f"{quality_failures} candidate(s): {exc}"
+                                ) from exc
+                            continue
                         print(f"[WARN] Gemini source-packet model {model} via {client_label} failed: {exc}")
                         last_error = exc
 
@@ -1296,7 +1341,17 @@ class DailyBriefPipeline:
     def _raise_for_generated_candidate_quality(self, brief: dict[str, Any]) -> None:
         quality_issues = self._brief_quality_issues(brief)
         if quality_issues:
-            raise ValueError("generated candidate quality gate failed: " + "; ".join(quality_issues))
+            raise GeneratedCandidateQualityError(
+                "generated candidate quality gate failed: " + "; ".join(quality_issues)
+            )
+
+    @staticmethod
+    def _max_generated_candidate_quality_failures() -> int:
+        raw_value = os.environ.get("BRIEFSNAP_MAX_GENERATED_QUALITY_FAILURES", "3")
+        try:
+            return max(1, int(raw_value))
+        except ValueError:
+            return 3
 
     def _brief_prompt(self, articles: list[ArticleCandidate], max_excerpt_chars: int = 900) -> str:
         records = [article.prompt_record(max_chars=max_excerpt_chars) for article in articles]
