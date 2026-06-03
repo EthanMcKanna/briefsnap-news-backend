@@ -1429,8 +1429,81 @@ Sports score packet:
                 candidate_topic_counts=self.source_candidate_topic_counts,
             ),
         }
+        brief = self._repair_brief_for_publish(brief, articles)
         brief.update(self._sports_scores_metadata(score_cards))
         return brief
+
+    def _repair_brief_for_publish(
+        self,
+        brief: dict[str, Any],
+        articles: list[ArticleCandidate],
+    ) -> dict[str, Any]:
+        repaired_stories: list[dict[str, Any]] = []
+        for story in brief.get("stories", []):
+            if not isinstance(story, dict):
+                continue
+            repaired = dict(story)
+            topic = self._normalize_topic(repaired.get("topic"))
+            source = str(repaired.get("source") or "")
+            title = _clean_text(repaired.get("title"))
+            url = str(repaired.get("url") or "")
+            if not title or self._is_unpolished_copy(title):
+                continue
+            if self._is_bad_story_summary(
+                repaired.get("summary"),
+                title=title,
+                source=source,
+                url=url,
+            ):
+                repaired["summary"] = self._title_based_summary(
+                    title=title,
+                    topic=topic,
+                    source=source,
+                )
+            if self._is_bad_story_summary(
+                repaired.get("summary"),
+                title=title,
+                source=source,
+                url=url,
+            ):
+                continue
+            if self._is_unpolished_copy(repaired.get("why_it_matters")):
+                repaired["why_it_matters"] = self._default_why_for_topic(topic)
+            repaired_stories.append(repaired)
+
+        if len(repaired_stories) < 6:
+            return brief
+
+        repaired_stories = self._filter_story_list_for_publish(repaired_stories)
+        if len(repaired_stories) < 6:
+            return brief
+
+        sections = self._normalize_sections([], repaired_stories, articles)
+        widgets = self._normalize_widgets([], repaired_stories, articles)
+        headline, dek, summary, quick_hits = self._grounded_top_level_copy(
+            payload=brief,
+            stories=repaired_stories,
+        )
+        repaired_brief = dict(brief)
+        repaired_brief.update(
+            {
+                "headline": headline,
+                "dek": dek,
+                "summary": summary,
+                "quick_hits": quick_hits,
+                "hero_image_url": self._hero_image_url(repaired_stories),
+                "sections": sections,
+                "custom_widgets": widgets,
+                "stories": repaired_stories[:18],
+                "coverage_report": self._coverage_report(
+                    stories=repaired_stories[:18],
+                    articles=articles,
+                    sections=sections,
+                    candidate_topic_counts=self.source_candidate_topic_counts,
+                ),
+            }
+        )
+        return repaired_brief
 
     def _normalized_story_from_article(
         self,
@@ -1499,7 +1572,11 @@ Sports score packet:
 
     @classmethod
     def _default_why_it_matters(cls, article: ArticleCandidate) -> str:
-        topic = cls._normalize_topic(article.topic)
+        return cls._default_why_for_topic(cls._normalize_topic(article.topic))
+
+    @classmethod
+    def _default_why_for_topic(cls, topic: str) -> str:
+        topic = cls._normalize_topic(topic)
         if topic == "TOP_NEWS":
             return "It is one of today's clearest public-impact updates."
         if topic == "BUSINESS":
