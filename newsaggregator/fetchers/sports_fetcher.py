@@ -46,12 +46,22 @@ SPORTS_NEWS_LOW_SIGNAL_PATTERNS = (
     "mock draft",
 )
 SPORTS_NEWS_HARD_LOW_SIGNAL_PATTERNS = (
+    "power rankings",
+    "rankings",
+    "ranking",
+    "way-too-early",
+    "mock draft",
+    "top 25",
+    "top 100",
+)
+SPORTS_NEWS_EXCLUDED_PATTERNS = (
     "betting",
     "odds",
     "parlay",
     "picks",
     "predictions",
     "dfs",
+    "how to watch",
 )
 SPORTS_NEWS_HIGH_SIGNAL_KEYWORDS = (
     "trade",
@@ -80,6 +90,28 @@ SPORTS_NEWS_HIGH_SIGNAL_KEYWORDS = (
     "dies",
     "death",
 )
+SPORTS_NEWS_DUPLICATE_STOPWORDS = {
+    "after",
+    "before",
+    "best",
+    "espn",
+    "final",
+    "finals",
+    "from",
+    "game",
+    "latest",
+    "league",
+    "news",
+    "says",
+    "source",
+    "sources",
+    "team",
+    "teams",
+    "that",
+    "the",
+    "this",
+    "with",
+}
 
 
 class SportsFetcher:
@@ -509,7 +541,7 @@ class SportsFetcher:
                 if age_hours < -1 or age_hours > SPORTS_NEWS_MAX_AGE_HOURS:
                     continue
 
-            if cls._is_hard_low_signal_news(article):
+            if cls._is_excluded_news_article(article) or cls._is_hard_low_signal_news(article):
                 continue
 
             fallback_articles.append(article)
@@ -519,10 +551,24 @@ class SportsFetcher:
             scored_articles.append((score, index, article))
 
         scored_articles.sort(key=lambda item: (-item[0], item[1]))
-        selected = [article for _, _, article in scored_articles[:limit]]
+        selected = []
+        for _, _, article in scored_articles:
+            if any(cls._is_near_duplicate_news(article, existing) for existing in selected):
+                continue
+            selected.append(article)
+            if len(selected) >= limit:
+                break
         if selected:
             return selected
-        return fallback_articles[:limit]
+
+        fallback_selected = []
+        for article in fallback_articles:
+            if any(cls._is_near_duplicate_news(article, existing) for existing in fallback_selected):
+                continue
+            fallback_selected.append(article)
+            if len(fallback_selected) >= limit:
+                break
+        return fallback_selected
 
     @staticmethod
     def _parse_news_datetime(value: object) -> Optional[datetime]:
@@ -587,11 +633,50 @@ class SportsFetcher:
         headline = str(article.get('headline') or '')
         description = str(article.get('description') or '')
         text = f"{headline} {description}".lower()
-        has_high_signal = any(keyword in text for keyword in SPORTS_NEWS_HIGH_SIGNAL_KEYWORDS)
-        return (
-            not has_high_signal
-            and any(pattern in text for pattern in SPORTS_NEWS_HARD_LOW_SIGNAL_PATTERNS)
-        )
+        return any(pattern in text for pattern in SPORTS_NEWS_HARD_LOW_SIGNAL_PATTERNS)
+
+    @staticmethod
+    def _is_excluded_news_article(article: Dict) -> bool:
+        headline = str(article.get('headline') or '')
+        description = str(article.get('description') or '')
+        link = str(article.get('link') or '').lower()
+        text = f"{headline} {description}".lower()
+        if "/video/" in link or "/video/clip" in link:
+            return True
+        return any(pattern in text for pattern in SPORTS_NEWS_EXCLUDED_PATTERNS)
+
+    @classmethod
+    def _is_near_duplicate_news(cls, lhs: Dict, rhs: Dict) -> bool:
+        lhs_story_id = cls._espn_story_id(lhs)
+        rhs_story_id = cls._espn_story_id(rhs)
+        if lhs_story_id and lhs_story_id == rhs_story_id:
+            return True
+
+        lhs_tokens = cls._news_article_tokens(lhs)
+        rhs_tokens = cls._news_article_tokens(rhs)
+        if not lhs_tokens or not rhs_tokens:
+            return False
+
+        overlap = lhs_tokens.intersection(rhs_tokens)
+        overlap_ratio = len(overlap) / min(len(lhs_tokens), len(rhs_tokens))
+        return len(overlap) >= 3 and overlap_ratio >= 0.6
+
+    @staticmethod
+    def _espn_story_id(article: Dict) -> Optional[str]:
+        link = str(article.get('link') or '')
+        match = re.search(r"/id/(\d+)", link)
+        return match.group(1) if match else None
+
+    @staticmethod
+    def _news_article_tokens(article: Dict) -> set[str]:
+        headline = str(article.get('headline') or '')
+        description = str(article.get('description') or '')
+        tokens = set(re.findall(r"[a-z0-9]+", f"{headline} {description}".lower()))
+        return {
+            token
+            for token in tokens
+            if len(token) > 2 and token not in SPORTS_NEWS_DUPLICATE_STOPWORDS
+        }
 
     def _fallback_leagues(self) -> List[LeagueDescriptor]:
         leagues: List[LeagueDescriptor] = []

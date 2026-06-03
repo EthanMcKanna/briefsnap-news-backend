@@ -149,6 +149,13 @@ def test_select_high_signal_news_articles_filters_stale_low_signal_items():
             "source": "ESPN",
         },
         {
+            "headline": "Coach fired after playoff exit reaction",
+            "description": "A video clip covering the same coaching change.",
+            "link": "https://www.espn.com/video/clip/_/id/99999999/coach-fired-reaction",
+            "published": (now - timedelta(hours=1)).isoformat(),
+            "source": "ESPN",
+        },
+        {
             "headline": "Old trade deadline tracker",
             "description": "This item is too old for a current sports rail.",
             "link": "https://espn.com/nba/old-tracker",
@@ -163,6 +170,39 @@ def test_select_high_signal_news_articles_filters_stale_low_signal_items():
         "Star guard signs four-year contract extension before Finals",
         "Veteran coach fired after playoff exit",
     ]
+
+
+def test_select_high_signal_news_articles_suppresses_near_duplicate_variants():
+    now = datetime.now(timezone.utc)
+    articles = [
+        {
+            "headline": "Browns' Monken says drafting Sorsby is a slippery slope",
+            "description": "The coach addressed the quarterback's draft outlook.",
+            "link": "https://espn.com/college-football/story/_/id/111/browns-monken-sorsby",
+            "published": (now - timedelta(hours=2)).isoformat(),
+            "source": "ESPN",
+        },
+        {
+            "headline": "'Slippery slope' to draft embattled QB Sorsby, says Browns' Monken",
+            "description": "The same quarterback story appears with a variant headline.",
+            "link": "https://espn.com/college-football/story/_/id/222/slippery-slope-sorsby",
+            "published": (now - timedelta(hours=1)).isoformat(),
+            "source": "ESPN",
+        },
+        {
+            "headline": "Texas A&M adds linebacker to top recruiting class",
+            "description": "The commitment changes the program's 2027 defensive class.",
+            "link": "https://espn.com/college-football/story/_/id/333/texas-am-recruiting",
+            "published": (now - timedelta(hours=3)).isoformat(),
+            "source": "ESPN",
+        },
+    ]
+
+    selected = SportsFetcher._select_high_signal_news_articles(articles, limit=3)
+
+    assert len(selected) == 2
+    assert sum("Sorsby" in article["headline"] for article in selected) == 1
+    assert selected[-1]["headline"] == "Texas A&M adds linebacker to top recruiting class"
 
 
 def test_select_high_signal_news_articles_keeps_fresh_fallback_when_feed_is_generic():
