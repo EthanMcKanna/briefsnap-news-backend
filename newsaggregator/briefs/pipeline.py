@@ -4726,12 +4726,25 @@ Generated at: {generated_at}
         *,
         protected_topic: str,
     ) -> int | None:
+        normalized_protected = DailyBriefPipeline._normalize_topic(protected_topic)
+        counts = Counter(
+            DailyBriefPipeline._normalize_topic(article.topic)
+            for article in selected
+            if article.topic
+        )
         for index in range(len(selected) - 1, -1, -1):
             topic = DailyBriefPipeline._normalize_topic(selected[index].topic)
-            if topic not in {protected_topic, "TOP_NEWS"}:
+            floor = SOURCE_PACKET_TOPIC_MINIMUMS.get(topic, 0)
+            if topic != normalized_protected and counts.get(topic, 0) > floor:
+                return index
+
+        protected_topics = {normalized_protected, "TOP_NEWS"}
+        for index in range(len(selected) - 1, -1, -1):
+            topic = DailyBriefPipeline._normalize_topic(selected[index].topic)
+            if topic not in protected_topics:
                 return index
         for index in range(len(selected) - 1, -1, -1):
-            if DailyBriefPipeline._normalize_topic(selected[index].topic) != protected_topic:
+            if DailyBriefPipeline._normalize_topic(selected[index].topic) != normalized_protected:
                 return index
         return None
 

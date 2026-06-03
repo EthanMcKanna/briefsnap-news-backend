@@ -1787,6 +1787,60 @@ def test_source_packet_repairs_domain_breadth_without_breaking_topic_floors():
     assert selected_topics["TOP_NEWS"] >= 8
 
 
+def test_topic_floor_repair_replaces_overrepresented_topics_before_floor_topics():
+    selected: list[ArticleCandidate] = []
+    for topic, count in [
+        ("TOP_NEWS", 12),
+        ("WORLD", 4),
+        ("BUSINESS", 4),
+        ("TECHNOLOGY", 4),
+        ("HEALTH", 2),
+        ("SCIENCE", 2),
+    ]:
+        for index in range(count):
+            selected.append(
+                ArticleCandidate(
+                    id=f"{topic.lower()}-{index}",
+                    topic=topic,
+                    title=f"{topic} source-backed story {index}",
+                    source="Associated Press",
+                    url=f"https://source-{topic.lower()}-{index}.example.com/story",
+                    description="A current source-backed item with enough detail for the daily brief.",
+                    score=100 - len(selected),
+                )
+            )
+
+    sports_articles = [
+        ArticleCandidate(
+            id=f"sports-{index}",
+            topic="SPORTS",
+            title=f"NBA playoff rotation report changes matchup {index}",
+            source="ESPN",
+            url=f"https://www.espn.com/nba/story/_/id/sports-{index}/playoff-rotation",
+            description="A current NBA playoff report with enough detail for the daily brief.",
+            score=20 - index,
+        )
+        for index in range(3)
+    ]
+
+    repaired = DailyBriefPipeline._ensure_minimum_topic_articles(
+        selected.copy(),
+        [*selected, *sports_articles],
+        topic="SPORTS",
+        minimum=3,
+        limit=len(selected),
+    )
+    selected_topics = Counter(DailyBriefPipeline._normalize_topic(article.topic) for article in repaired)
+
+    assert selected_topics["SPORTS"] == 3
+    assert selected_topics["TOP_NEWS"] == 9
+    assert selected_topics["WORLD"] >= 4
+    assert selected_topics["BUSINESS"] >= 4
+    assert selected_topics["TECHNOLOGY"] >= 4
+    assert selected_topics["HEALTH"] >= 2
+    assert selected_topics["SCIENCE"] >= 2
+
+
 def test_candidate_dedupe_removes_paraphrased_same_story_before_source_packet():
     articles = [
         ArticleCandidate(
