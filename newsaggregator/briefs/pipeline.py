@@ -96,6 +96,9 @@ LOW_VALUE_URL_MARKERS: tuple[str, ...] = (
     "/business-wire/",
     "/first-opinion/",
     "/globenewswire/",
+    "/live/",
+    "/liveblog/",
+    "/live-blog/",
 )
 
 LOW_VALUE_TITLE_MARKERS: tuple[str, ...] = (
@@ -105,7 +108,11 @@ LOW_VALUE_TITLE_MARKERS: tuple[str, ...] = (
     "class action alert",
     "doesn't matter that people hate",
     "doesn’t matter that people hate",
+    "exclusive: transcript",
     "investor alert",
+    "live blog",
+    "live updates",
+    "live:",
     "opinion |",
     "opinion:",
     "pulls u-turn",
@@ -118,11 +125,20 @@ LOW_VALUE_TITLE_MARKERS: tuple[str, ...] = (
     "why shares",
 )
 
+LOW_VALUE_DESCRIPTION_MARKERS: tuple[str, ...] = (
+    "rolling coverage",
+    "transcript of",
+    "transcript:",
+)
+
 BOILERPLATE_COPY_MARKERS: tuple[str, ...] = (
     "add ap news as your preferred source",
     "advertisement",
+    "disable any ad blocker",
     "hide caption",
     "is a senior editor and founding member",
+    "no other snapshots from this url",
+    "please enable js",
     "read more from",
     "sign up for",
     "subscribe to",
@@ -201,6 +217,15 @@ SPORTS_SECTION_DRIFT_TERMS: tuple[str, ...] = (
     "earnings",
     "box office",
     "celebrity",
+)
+
+SPORTS_HARD_DRIFT_MARKERS: tuple[str, ...] = (
+    "free trade",
+    "trade minister",
+    "trade pact",
+    "tariff",
+    "tariffs",
+    "usmca",
 )
 
 HEALTH_SIGNAL_TERMS: tuple[str, ...] = (
@@ -427,9 +452,11 @@ DANGLING_COPY_ENDINGS: set[str] = {
     "another",
     "as",
     "at",
+    "are",
     "because",
     "but",
     "by",
+    "departed",
     "for",
     "from",
     "in",
@@ -437,13 +464,22 @@ DANGLING_COPY_ENDINGS: set[str] = {
     "of",
     "on",
     "or",
+    "our",
     "over",
+    "shrinking",
     "the",
+    "that",
+    "their",
+    "this",
     "to",
     "under",
+    "was",
+    "were",
     "while",
+    "will",
     "with",
     "without",
+    "would",
 }
 
 
@@ -1275,6 +1311,13 @@ Sports score packet:
         normalized_stories = self._rebalance_story_order(normalized_stories, articles)
         normalized_stories = self._ensure_leading_domain_diversity(normalized_stories, articles)
         normalized_stories = self._ensure_visible_source_supported_topics(normalized_stories, articles)
+        normalized_stories = self._filter_story_list_for_publish(normalized_stories)
+        normalized_stories = self._rebalance_story_order(normalized_stories, articles)
+        normalized_stories = self._ensure_leading_domain_diversity(normalized_stories, articles)
+        normalized_stories = self._filter_story_list_for_publish(normalized_stories)
+
+        if len(normalized_stories) < 6:
+            return self._fallback_brief(articles, model_used=model_used)
 
         now = datetime.now(timezone.utc)
         sections = self._normalize_sections(payload.get("sections", []), normalized_stories, articles)
@@ -1319,16 +1362,26 @@ Sports score packet:
         source = _clean_text(story.get("source") or article.source)
         title = self._clean_title(story.get("title") or article.title, source=source)
         summary = self._clean_description(story.get("summary") or "", title=title, source=source)
+        summary = _collapse_visible_truncation(summary)
+        if self._is_bad_story_summary(summary, title=title, source=source, url=article.url):
+            summary = ""
         if not summary:
             summary = self._clean_description(article.description or "", title=title, source=source)
+            summary = _collapse_visible_truncation(summary)
+        if self._is_bad_story_summary(summary, title=title, source=source, url=article.url):
+            summary = ""
         if not summary:
             summary = self._clean_description(article.content[:500], title=title, source=source)
+            summary = _collapse_visible_truncation(summary)
+        if self._is_bad_story_summary(summary, title=title, source=source, url=article.url):
+            summary = ""
         if not summary:
             summary = title
 
-        topic = article.topic
-        if self._normalize_topic(topic) != "SPORTS":
-            topic = story.get("topic") or article.topic
+        topic = self._normalize_topic(article.topic or story.get("topic"))
+        summary_text = _trim_words(summary, 28)
+        if _word_count(summary_text) > 28:
+            summary_text = _trim_words(summary, 27)
 
         return {
             "id": article.id,
@@ -1336,7 +1389,7 @@ Sports score packet:
             "title": _trim_words(title, 18),
             "source": source,
             "url": article.url,
-            "summary": _trim_words(summary, 22),
+            "summary": summary_text,
             "why_it_matters": _trim_words(
                 story.get("why_it_matters") or why_it_matters or self._default_why_it_matters(article),
                 18,
@@ -1425,11 +1478,13 @@ Sports score packet:
             ):
                 continue
 
-            story_ids.add(article.id)
             story = self._normalized_story_from_article(
                 article,
                 why_it_matters="A high-signal sports source adds context beyond the scoreboard.",
             )
+            if not self._story_passes_editorial_gate(story):
+                continue
+            story_ids.add(article.id)
             if len(stories) < max_visible:
                 stories.append(story)
             else:
@@ -1496,47 +1551,49 @@ Sports score packet:
         }
         visible_topics.discard("")
 
-        for topic in supported_topics:
-            if len(visible_topics) >= target_topic_count:
-                break
-            if topic in visible_topics:
-                continue
-            article = next(
-                (
-                    candidate
-                    for candidate in topic_groups.get(topic, [])
-                    if candidate.id not in story_ids
-                ),
-                None,
-            )
-            if not article:
-                continue
+        def publishable_story(article: ArticleCandidate) -> dict[str, Any] | None:
+            topic = self._normalize_topic(article.topic)
             if topic == "SPORTS" and not self._is_high_signal_sports_candidate(
                 title=article.title,
                 source=article.source,
                 url=article.url,
                 description=article.description or article.content[:400],
             ):
+                return None
+            story = self._normalized_story_from_article(article)
+            if not self._story_passes_editorial_gate(story):
+                return None
+            return story
+
+        def next_publishable_story(topic: str) -> dict[str, Any] | None:
+            for candidate in topic_groups.get(topic, []):
+                if candidate.id in story_ids:
+                    continue
+                story = publishable_story(candidate)
+                if story:
+                    return story
+            return None
+
+        for topic in supported_topics:
+            if len(visible_topics) >= target_topic_count:
+                break
+            if topic in visible_topics:
                 continue
-            story_ids.add(article.id)
-            stories.append(self._normalized_story_from_article(article))
+            story = next_publishable_story(topic)
+            if not story:
+                continue
+            story_ids.add(str(story.get("id") or ""))
+            stories.append(story)
             visible_topics.add(topic)
 
         for topic in ("HEALTH", "SCIENCE"):
             if topic not in supported_topics or topic in visible_topics:
                 continue
-            article = next(
-                (
-                    candidate
-                    for candidate in topic_groups.get(topic, [])
-                    if candidate.id not in story_ids
-                ),
-                None,
-            )
-            if not article:
+            story = next_publishable_story(topic)
+            if not story:
                 continue
-            story_ids.add(article.id)
-            stories.append(self._normalized_story_from_article(article))
+            story_ids.add(str(story.get("id") or ""))
+            stories.append(story)
             visible_topics.add(topic)
 
         target_story_count = min(max(MIN_NORMALIZED_STORIES, target_topic_count + 3), len(articles), 18)
@@ -1548,16 +1605,11 @@ Sports score packet:
                 break
             if article.id in story_ids:
                 continue
-            topic = self._normalize_topic(article.topic)
-            if topic == "SPORTS" and not self._is_high_signal_sports_candidate(
-                title=article.title,
-                source=article.source,
-                url=article.url,
-                description=article.description or article.content[:400],
-            ):
+            story = publishable_story(article)
+            if not story:
                 continue
             story_ids.add(article.id)
-            stories.append(self._normalized_story_from_article(article))
+            stories.append(story)
 
     def _ensure_visible_source_supported_topics(
         self,
@@ -1825,6 +1877,8 @@ Sports score packet:
                     if not prefer_same_topic and self._normalize_topic(article.topic) == "SPORTS":
                         continue
                     replacement = self._normalized_story_from_article(article)
+                    if not self._story_passes_editorial_gate(replacement):
+                        continue
                     if any(self._stories_are_near_duplicates(replacement, story) for story in stories):
                         continue
                     used_replacement_ids.add(article.id)
@@ -2033,6 +2087,8 @@ Sports score packet:
             str(story.get(key) or "")
             for key in ("summary", "why_it_matters")
         )
+        if cls._is_bad_story_summary(story.get("summary"), title=title, source=source, url=url):
+            return False
         if topic == "SPORTS":
             return cls._is_high_signal_sports_candidate(
                 title=title,
@@ -2126,6 +2182,10 @@ Sports score packet:
         stories = self._rebalance_story_order(stories, articles)
         stories = self._ensure_leading_domain_diversity(stories, articles)
         stories = self._ensure_visible_source_supported_topics(stories, articles)
+        stories = self._filter_story_list_for_publish(stories)
+        stories = self._rebalance_story_order(stories, articles)
+        stories = self._ensure_leading_domain_diversity(stories, articles)
+        stories = self._filter_story_list_for_publish(stories)
         score_cards = self.sports_score_cards[:6]
         headline, dek, summary, quick_hits = self._grounded_top_level_copy(payload={}, stories=stories)
         sections = self._normalize_sections([], stories, articles)
@@ -2438,7 +2498,7 @@ Sports score packet:
     @classmethod
     def _headline_from_stories(cls, stories: list[dict[str, Any]]) -> str:
         for story in stories:
-            title = _trim_words_plain(story.get("title"), 10)
+            title = _trim_words_plain(story.get("title"), 14)
             if title and not cls._is_generic_headline(title):
                 return title
         return "BriefSnap current news"
@@ -2477,6 +2537,40 @@ Sports score packet:
             return True
         last_word = re.sub(r"[^a-z0-9']+", "", words[-1].lower())
         return last_word in DANGLING_COPY_ENDINGS
+
+    @classmethod
+    def _is_bad_story_summary(
+        cls,
+        summary: Any,
+        *,
+        title: str = "",
+        source: str = "",
+        url: str = "",
+    ) -> bool:
+        cleaned = _clean_text(summary)
+        if not cleaned:
+            return True
+        lowered = cleaned.lower().strip(" .")
+        if cls._is_unpolished_copy(cleaned):
+            return True
+        if _word_count(cleaned) < 5 or len(cleaned) < 28:
+            return True
+
+        source_key = re.sub(r"\W+", "", str(source or "").lower())
+        domain = cls._domain_name(str(url or ""))
+        domain_key = re.sub(r"\W+", "", domain.lower())
+        cleaned_key = re.sub(r"\W+", "", lowered)
+        if cleaned_key in {"com", "www", "http", "https"}:
+            return True
+        if source_key and cleaned_key == source_key:
+            return True
+        if domain_key and cleaned_key in {domain_key, domain_key.removesuffix("com")}:
+            return True
+        if re.fullmatch(r"(?:www\.)?[a-z0-9-]+\.(?:com|org|net|gov|edu|co|io)", lowered):
+            return True
+        if title and cls._same_title_fragment(cleaned, title):
+            return True
+        return False
 
     @staticmethod
     def _hero_image_url(stories: list[dict[str, Any]]) -> str | None:
@@ -2920,6 +3014,13 @@ Sports score packet:
                 issues.append(f"story {story_id} contains visible truncation")
             if any(self._is_unpolished_copy(story.get(key)) for key in ("title", "summary", "why_it_matters")):
                 issues.append(f"story {story_id} has clipped copy")
+            if self._is_bad_story_summary(
+                story.get("summary"),
+                title=str(story.get("title") or ""),
+                source=str(story.get("source") or ""),
+                url=url,
+            ):
+                issues.append(f"story {story_id} has an unusable summary")
 
         leading_domain_count = len(set(story_domains[: min(len(story_domains), 8)]))
         if len(stories) >= 8 and leading_domain_count < 4:
@@ -3241,6 +3342,8 @@ Sports score packet:
         has_sports_signal = cls._contains_any_term(text, SPORTS_SIGNAL_TERMS)
         has_section_drift = cls._contains_any_term(text, SPORTS_SECTION_DRIFT_TERMS)
 
+        if any(marker in text for marker in SPORTS_HARD_DRIFT_MARKERS) and not is_primary_sports_source:
+            return False
         if has_section_drift and not (is_primary_sports_source or has_sports_signal):
             return False
         return is_primary_sports_source or has_sports_signal
@@ -3886,6 +3989,18 @@ Generated at: {generated_at}
 
         cleaned = _clean_text(text)
         lowered = cleaned.lower()
+        for marker in (
+            " follow our ",
+            " read more from ",
+            " sign up for ",
+            " subscribe to ",
+        ):
+            index = lowered.find(marker)
+            if index > 0:
+                cleaned = _clean_text(cleaned[:index])
+                lowered = cleaned.lower()
+                break
+        lowered = cleaned.lower()
         if any(marker in lowered for marker in BOILERPLATE_COPY_MARKERS):
             return ""
         return cleaned
@@ -4075,8 +4190,23 @@ Generated at: {generated_at}
             return True
         if any(marker in lowered_title for marker in LOW_VALUE_TITLE_MARKERS):
             return True
+        if any(marker in text for marker in LOW_VALUE_DESCRIPTION_MARKERS):
+            return True
 
         normalized_topic = cls._normalize_topic(topic_code)
+        if any(
+            marker in text or marker in lowered_url
+            for marker in (
+                "as it happened",
+                "live updates",
+                "rolling coverage",
+                "transcript:",
+                "/live/",
+                "/liveblog/",
+                "/live-blog/",
+            )
+        ):
+            return True
         if normalized_topic == "TECHNOLOGY" and any(
             marker in lowered_title
             for marker in (
@@ -4159,7 +4289,10 @@ Generated at: {generated_at}
             or any(
                 marker in lowered_title
                 for marker in (
+                    "bracket, schedule, scores, news",
+                    "grades, questions",
                     "takes on ",
+                    "takeaways, grades, questions",
                     "seeks ",
                     "why stephen a.",
                     "trophy image",

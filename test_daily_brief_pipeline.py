@@ -569,7 +569,7 @@ def test_normalize_brief_keeps_backfilled_sports_inside_visible_story_window():
             title="MLB players demand salary overhaul before labor talks",
             source="The Washington Post",
             url="https://www.washingtonpost.com/business/2026/05/27/mlb-labor-negotiations/example",
-            description="",
+            description="MLB players are pressing for salary-system changes before the next labor negotiation window.",
             score=4,
         ),
     ]
@@ -908,6 +908,36 @@ def test_story_normalization_drops_scraped_source_boilerplate():
     ) == ""
 
 
+def test_story_normalization_replaces_junk_model_summary_and_keeps_source_topic():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    article = ArticleCandidate(
+        id="openai-cnbc",
+        topic="TECHNOLOGY",
+        title="OpenAI chief outlines infrastructure plans in new interview",
+        source="CNBC",
+        url="https://www.cnbc.com/2026/06/02/openai-altman-interview.html",
+        description=(
+            "OpenAI's chief executive discussed infrastructure spending, safety work, "
+            "and near-term product priorities."
+        ),
+    )
+
+    story = pipeline._normalized_story_from_article(
+        article,
+        story={
+            "topic": "WORLD",
+            "title": "OpenAI chief outlines infrastructure plans in new interview",
+            "source": "CNBC",
+            "summary": "com",
+            "why_it_matters": "It affects AI infrastructure and platform planning.",
+        },
+    )
+
+    assert story["topic"] == "TECHNOLOGY"
+    assert story["summary"].startswith("OpenAI's chief executive discussed infrastructure")
+    assert story["summary"] != "com"
+
+
 def test_quality_gate_rejects_unsupported_top_level_named_entities():
     pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
     brief = valid_quality_brief()
@@ -956,6 +986,14 @@ def test_feed_cleanup_removes_google_news_cluster_artifacts():
             source="AP News",
         )
         == ""
+    )
+    assert (
+        DailyBriefPipeline._clean_description(
+            "Sydney crowd told to target National MPs before a vote. Follow our Australia news live blog.",
+            title="Barnaby Joyce rallies anti-abortion activists ahead of tight NSW vote",
+            source="The Guardian",
+        )
+        == "Sydney crowd told to target National MPs before a vote."
     )
 
 
@@ -1442,6 +1480,24 @@ def test_low_density_filler_candidates_are_rejected_before_story_selection():
         ),
         (
             {
+                "title": "Golden Knights-Hurricanes Game 1 takeaways, grades, questions",
+                "url": "https://www.espn.com/nhl/story/_/id/48960000/golden-knights-hurricanes-game-1",
+                "source": "ESPN",
+                "description": "A hub-style recap with generic grades and questions.",
+            },
+            "SPORTS",
+        ),
+        (
+            {
+                "title": "Canada formally requests 16-year renewal of North American free trade pact",
+                "url": "https://www.bbc.com/news/articles/canada-usmca-renewal",
+                "source": "BBC News",
+                "description": "A trade minister asked North American counterparts to renew the USMCA trade pact.",
+            },
+            "SPORTS",
+        ),
+        (
+            {
                 "title": "United Airlines flight to Spain pulls U-turn, apparently over Bluetooth device name",
                 "url": "https://www.npr.org/2026/05/31/nx-s1-5841913/united-airlines-flight-diversion-bluetooth",
                 "source": "NPR",
@@ -1532,6 +1588,24 @@ def test_low_density_filler_candidates_are_rejected_before_story_selection():
                 "description": "A rolling local politics ticker, not a concise global-impact story.",
             },
             "WORLD",
+        ),
+        (
+            {
+                "title": "CNBC Exclusive: Transcript: OpenAI CEO Sam Altman Speaks with CNBC's David Faber",
+                "url": "https://www.cnbc.com/2026/06/02/transcript-openai-ceo-sam-altman.html",
+                "source": "CNBC",
+                "description": "Transcript of a television interview, not a clean reported story.",
+            },
+            "TECHNOLOGY",
+        ),
+        (
+            {
+                "title": "Alphabet shares drop after announcing $80bn share sale - business live",
+                "url": "https://www.theguardian.com/business/live/2026/jun/02/markets-business-live",
+                "source": "The Guardian",
+                "description": "Rolling coverage of the latest economic and financial news.",
+            },
+            "BUSINESS",
         ),
     ]
 
@@ -1831,11 +1905,43 @@ def test_publish_story_filter_removes_editorial_failures_before_quality_gate():
             "summary": "A culture item about a celebrity appearance.",
             "why_it_matters": "It is entertainment context rather than team coverage.",
         },
+        {
+            "id": "bad-transcript",
+            "topic": "TECHNOLOGY",
+            "title": "CNBC Exclusive: Transcript: OpenAI CEO Sam Altman Speaks with CNBC's David Faber",
+            "source": "CNBC",
+            "url": "https://www.cnbc.com/2026/06/02/transcript-openai-ceo-sam-altman.html",
+            "summary": "com",
+            "why_it_matters": "It affects AI infrastructure and platform planning.",
+        },
+        {
+            "id": "bad-liveblog",
+            "topic": "BUSINESS",
+            "title": "Alphabet shares drop after announcing $80bn share sale - business live",
+            "source": "The Guardian",
+            "url": "https://www.theguardian.com/business/live/2026/jun/02/markets-business-live",
+            "summary": "Rolling coverage of the latest economic and financial news.",
+            "why_it_matters": "It affects market and technology company coverage.",
+        },
     ]
 
     filtered = DailyBriefPipeline._filter_story_list_for_publish(stories)
 
     assert [story["id"] for story in filtered] == ["good-world"]
+
+
+def test_quality_gate_rejects_single_word_story_summary():
+    brief = valid_quality_brief()
+    brief["stories"][0]["summary"] = "com"
+    brief["stories"][1]["summary"] = brief["stories"][1]["title"]
+    brief["stories"][2]["summary"] = "Please enable JS and disable any ad blocker."
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+
+    issues = pipeline._brief_quality_issues(brief)
+
+    assert "story story-1 has an unusable summary" in issues
+    assert "story story-2 has an unusable summary" in issues
+    assert "story story-3 has an unusable summary" in issues
 
 
 def test_quality_gate_requires_supported_topic_breadth():
@@ -2305,6 +2411,7 @@ def test_story_image_coverage_replaces_image_less_tail_stories():
             title="Bond market warning changes inflation outlook",
             source="AP News",
             url="https://apnews.com/article/bond-market-warning",
+            description="A bond-market signal is changing inflation expectations for investors and policymakers.",
             image_url=image_url,
             score=16,
         ),
@@ -2362,6 +2469,7 @@ def test_story_image_coverage_preserves_image_less_lead_story():
             title="Thunder injury changes Finals rotation",
             source="ESPN",
             url="https://www.espn.com/nba/story/thunder-finals-rotation",
+            description="A Thunder injury update changes the rotation before the next Finals matchup.",
             image_url=image_url,
             score=17,
         ),
@@ -2685,6 +2793,12 @@ def test_sports_story_filter_rejects_political_drift_without_word_substring_fals
     )
 
     assert not DailyBriefPipeline._contains_any_term("white house", ("win",))
+    assert not DailyBriefPipeline._is_high_signal_sports_candidate(
+        title="Canada formally requests 16-year renewal of North American free trade pact",
+        source="BBC News",
+        url="https://www.bbc.com/news/articles/canada-usmca-renewal",
+        description="A trade minister asked counterparts to renew the USMCA trade pact.",
+    )
 
 
 def test_sports_gate_accepts_athletic_paths_on_general_news_domains():
