@@ -485,6 +485,31 @@ DANGLING_COPY_ENDINGS: set[str] = {
     "without",
     "would",
 }
+FRAGMENT_SENTENCE_STARTERS: set[str] = {
+    "as",
+    "at",
+    "because",
+    "before",
+    "by",
+    "despite",
+    "during",
+    "for",
+    "from",
+    "if",
+    "in",
+    "into",
+    "of",
+    "on",
+    "over",
+    "since",
+    "through",
+    "to",
+    "under",
+    "until",
+    "while",
+    "with",
+    "without",
+}
 
 
 def _clean_text(value: Any) -> str:
@@ -531,10 +556,10 @@ def _trim_text_naturally(value: Any, max_words: int) -> str:
 def _collapse_visible_truncation(text: str) -> str:
     parts = [part.strip(" .") for part in re.split(r"\.{3,}|…", text) if part.strip(" .")]
     if not parts:
-        return text
+        return _strip_terminal_sentence_fragment(text)
     if _word_count(parts[0]) >= 5:
-        return parts[0]
-    return _clean_text(" ".join(parts))
+        return _strip_terminal_sentence_fragment(parts[0])
+    return _strip_terminal_sentence_fragment(_clean_text(" ".join(parts)))
 
 
 def _natural_boundary_trim(text: str, max_words: int) -> str:
@@ -562,7 +587,39 @@ def _strip_dangling_copy_ending(text: str) -> str:
             cleaned = " ".join(words[:-1]).rstrip(" ,;:-")
             continue
         break
+    return _strip_terminal_sentence_fragment(cleaned)
+
+
+def _strip_terminal_sentence_fragment(text: str) -> str:
+    cleaned = _clean_text(text)
+    if not cleaned:
+        return ""
+    parts = [part for part in re.split(r"(?<=[.!?])\s+", cleaned) if part.strip()]
+    if len(parts) <= 1:
+        return cleaned
+    trailing = parts[-1].strip()
+    if _is_short_sentence_fragment(trailing):
+        return _clean_text(" ".join(parts[:-1])).rstrip(" ,;:-")
     return cleaned
+
+
+def _has_terminal_sentence_fragment(text: str) -> bool:
+    cleaned = _clean_text(text)
+    if not cleaned:
+        return False
+    parts = [part for part in re.split(r"(?<=[.!?])\s+", cleaned) if part.strip()]
+    if not parts:
+        return False
+    return _is_short_sentence_fragment(parts[-1])
+
+
+def _is_short_sentence_fragment(text: str) -> bool:
+    words = re.findall(r"\b[\w'-]+\b", _clean_text(text).strip(" .!?"))
+    if not words:
+        return False
+    if words[0].lower() not in FRAGMENT_SENTENCE_STARTERS:
+        return False
+    return len(words) <= 5
 
 
 def _trim_items(items: Any, *, max_items: int, max_words: int) -> list[str]:
@@ -2682,6 +2739,8 @@ Sports score packet:
         normalized_quotes = cleaned.replace("“", '"').replace("”", '"')
         if normalized_quotes.count('"') % 2 == 1:
             return True
+        if _has_terminal_sentence_fragment(cleaned):
+            return True
         lowered = cleaned.lower().rstrip(" .!?")
         if re.search(r"\bseeing (?:their|its|his|her|our) supplies$", lowered):
             return True
@@ -3115,6 +3174,7 @@ Sports score packet:
         model_used = str(brief.get("model_used") or "").lower()
         stories = [story for story in brief.get("stories", []) if isinstance(story, dict)]
         sections = [section for section in brief.get("sections", []) if isinstance(section, dict)]
+        widgets = [widget for widget in brief.get("custom_widgets", []) if isinstance(widget, dict)]
         valid_story_ids = {str(story.get("id")) for story in stories if story.get("id")}
 
         if (model_used == "dry-run" or "fallback" in model_used) and not self.options.allow_fallback_publish:
@@ -3417,6 +3477,15 @@ Sports score packet:
 
         for section in sections:
             topic = self._normalize_topic(section.get("topic"))
+            section_copy = [
+                section.get("title"),
+                section.get("summary"),
+                section.get("why_it_matters"),
+            ]
+            if any(self._has_visible_truncation(item) for item in section_copy if item):
+                issues.append(f"{topic or 'UNKNOWN'} section contains visible truncation")
+            if any(self._is_unpolished_copy(item) for item in section_copy if item):
+                issues.append(f"{topic or 'UNKNOWN'} section has clipped copy")
             story_ids = [
                 str(story_id).strip()
                 for story_id in section.get("story_ids", [])
@@ -3441,6 +3510,18 @@ Sports score packet:
             ]
             if len(top_refs) < 2:
                 issues.append("TOP_NEWS section needs at least two real story references")
+
+        for widget in widgets:
+            topic = _clean_text(widget.get("topic")) or "UNKNOWN"
+            widget_copy = [
+                widget.get("title"),
+                widget.get("summary"),
+                *(widget.get("items", []) if isinstance(widget.get("items"), list) else []),
+            ]
+            if any(self._has_visible_truncation(item) for item in widget_copy if item):
+                issues.append(f"{topic} widget contains visible truncation")
+            if any(self._is_unpolished_copy(item) for item in widget_copy if item):
+                issues.append(f"{topic} widget has clipped copy")
 
         if self.sports_score_cards and not brief.get("sports_scores"):
             issues.append("sports scores were fetched but omitted from the brief")
@@ -3603,6 +3684,8 @@ Sports score packet:
                 title = _trim_words(widget.get("title"), 5)
                 summary = _trim_words(widget.get("summary"), 24)
                 items = _trim_items(widget.get("items", []), max_items=5, max_words=12)
+                if self._is_unpolished_copy(summary):
+                    summary = self._widget_summary_fallback(topic, stories, items)
                 if not topic or (not summary and not items):
                     continue
                 if topic in seen_topics:
@@ -3631,11 +3714,14 @@ Sports score packet:
                 summary = str(related_stories[0].get("summary") or "").strip()
             if not summary:
                 summary = (group[0].description or group[0].content[:220] or "Latest selected updates.").strip()
+            summary = _trim_words(summary, 24)
+            if self._is_unpolished_copy(summary):
+                summary = self._widget_summary_fallback(topic, stories, items)
             widgets.append(
                 {
                     "topic": topic,
                     "title": self._topic_name(topic),
-                    "summary": _trim_words(summary, 24),
+                    "summary": summary,
                     "items": _trim_items(items, max_items=5, max_words=12),
                 }
             )
@@ -3644,6 +3730,29 @@ Sports score packet:
                 break
 
         return widgets
+
+    def _widget_summary_fallback(
+        self,
+        topic: Any,
+        stories: list[dict[str, Any]],
+        items: list[str],
+    ) -> str:
+        normalized_topic = self._normalize_topic(topic)
+        candidate_stories = [
+            story
+            for story in stories
+            if self._normalize_topic(story.get("topic")) == normalized_topic
+        ]
+        if normalized_topic == "TOP_NEWS" and not candidate_stories:
+            candidate_stories = stories[:3]
+        for story in candidate_stories:
+            summary = _trim_words(story.get("summary"), 24)
+            if summary and not self._is_unpolished_copy(summary):
+                return summary
+        item_summary = _trim_words(" • ".join(items[:2]), 24)
+        if item_summary and not self._is_unpolished_copy(item_summary):
+            return item_summary
+        return ""
 
     @staticmethod
     def _topic_article_groups(articles: list[ArticleCandidate]) -> dict[str, list[ArticleCandidate]]:

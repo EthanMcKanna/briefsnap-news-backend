@@ -1000,6 +1000,39 @@ def test_story_normalization_rejects_dangling_and_unrelated_model_copy():
     )
 
 
+def test_story_normalization_strips_terminal_fragment_sentence():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    article = ArticleCandidate(
+        id="iowa-primary",
+        topic="TOP_NEWS",
+        title="Iowa voters pick their nominees for competitive general elections",
+        source="AP News",
+        url="https://apnews.com/article/iowa-primary-election",
+        description=(
+            "Democratic state Rep. Josh Turek will face Republican U.S. Rep. "
+            "Ashley Hinson in the Senate race."
+        ),
+    )
+
+    story = pipeline._normalized_story_from_article(
+        article,
+        story={
+            "summary": (
+                "Democratic state Rep. Josh Turek will face Republican U.S. Rep. "
+                "Ashley Hinson in the Senate race. For governor"
+            ),
+            "why_it_matters": "The races will shape Iowa's statewide ballot in November.",
+        },
+    )
+
+    assert story["summary"] == (
+        "Democratic state Rep. Josh Turek will face Republican U.S. Rep. "
+        "Ashley Hinson in the Senate race"
+    )
+    assert "For governor" not in story["summary"]
+    assert not DailyBriefPipeline._is_unpolished_copy(story["summary"])
+
+
 def test_quality_gate_rejects_unsupported_top_level_named_entities():
     pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
     brief = valid_quality_brief()
@@ -1018,6 +1051,21 @@ def test_quality_gate_rejects_clipped_visible_copy():
     brief = valid_quality_brief()
     brief["headline"] = "Kuwait says it faced a missile and drone attack, another"
     brief["summary"] = "A concise summary starts well but trails off..."
+    brief["sections"][0]["summary"] = (
+        "Democratic state Rep. Josh Turek will face Republican U.S. Rep. "
+        "Ashley Hinson in the Senate race. For governor"
+    )
+    brief["custom_widgets"] = [
+        {
+            "topic": "TOP_NEWS",
+            "title": "Top News",
+            "summary": (
+                "Democratic state Rep. Josh Turek will face Republican U.S. Rep. "
+                "Ashley Hinson in the Senate race. For governor"
+            ),
+            "items": ["Iowa voters pick their nominees"],
+        }
+    ]
     brief["stories"][0]["summary"] = "A story summary starts with useful detail before it trails off..."
     brief["stories"][1]["summary"] = (
         "\"If you're 22 years old in San Francisco and building something in AI, "
@@ -1025,6 +1073,10 @@ def test_quality_gate_rejects_clipped_visible_copy():
     )
     brief["stories"][2]["summary"] = (
         "San Diego may have water to sell to states that are seeing their supplies"
+    )
+    brief["stories"][3]["summary"] = (
+        "Democratic state Rep. Josh Turek will face Republican U.S. Rep. "
+        "Ashley Hinson in the Senate race. For governor"
     )
 
     issues = pipeline._brief_quality_issues(brief)
@@ -1035,6 +1087,9 @@ def test_quality_gate_rejects_clipped_visible_copy():
     assert "story story-1 has clipped copy" in issues
     assert "story story-2 contains visible truncation" in issues
     assert "story story-3 contains visible truncation" in issues
+    assert "story story-4 contains visible truncation" in issues
+    assert "TOP_NEWS section contains visible truncation" in issues
+    assert "TOP_NEWS widget contains visible truncation" in issues
 
 
 def test_section_sanitizer_rebuilds_summary_from_visible_story_ids():
