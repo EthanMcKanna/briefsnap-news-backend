@@ -1309,6 +1309,18 @@ def test_grounded_top_level_copy_refreshes_old_fallback_dek():
     assert "Second current story" in dek
 
 
+def test_title_compaction_keeps_complete_short_action_phrases():
+    assert (
+        DailyBriefPipeline._compact_title_reference(
+            "US and Iran launch new strikes, as Kuwait says airport hit by Iranian drones"
+        )
+        == "US and Iran launch new strikes"
+    )
+    assert DailyBriefPipeline._is_unpolished_copy(
+        "The bill was designed to regulate an industry struggling"
+    )
+
+
 def test_feed_cleanup_removes_google_news_cluster_artifacts():
     raw_description = (
         "France moves to repeal Code Noir, the slavery law it never abolished "

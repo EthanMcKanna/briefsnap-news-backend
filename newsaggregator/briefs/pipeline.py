@@ -466,12 +466,15 @@ DANGLING_COPY_ENDINGS: set[str] = {
     "in",
     "into",
     "is",
+    "mean",
+    "new",
     "of",
     "on",
     "or",
     "our",
     "over",
     "shrinking",
+    "struggling",
     "the",
     "that",
     "their",
@@ -2793,7 +2796,7 @@ Sports score packet:
     @classmethod
     def _compact_title_reference(cls, title: Any) -> str:
         words = _clean_text(title).split()
-        for max_words in (5, 4, 3):
+        for max_words in (6, 5, 4, 3):
             compact = " ".join(words[:max_words]).strip(" ,;:-")
             compact = _strip_dangling_copy_ending(compact)
             if compact and not cls._is_unpolished_copy(compact):
