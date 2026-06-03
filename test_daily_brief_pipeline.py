@@ -998,6 +998,15 @@ def test_story_normalization_rejects_dangling_and_unrelated_model_copy():
     assert DailyBriefPipeline._is_unpolished_copy(
         "A Sydney academic used artificial intelligence to write an opinion piece. The university has"
     )
+    assert DailyBriefPipeline._is_unpolished_copy(
+        "Sydney academic used AI to write SMH opinion piece urging students to avoid using"
+    )
+    assert DailyBriefPipeline._is_unpolished_copy(
+        "'s Divergent Deployable Wastewater Treatment Facility, built at Kennedy Space Center"
+    )
+    assert DailyBriefPipeline._is_unpolished_copy(
+        "is opening access to its Fly Foundational Robots mission"
+    )
 
 
 def test_story_normalization_strips_terminal_fragment_sentence():
@@ -1052,6 +1061,23 @@ def test_story_normalization_rejects_scraped_noun_phrase_summary():
     assert story["summary"] == "NASA Testing Wastewater Treatment Facility for Future Moon Base"
     assert "that can help prepare" not in story["summary"]
 
+    possessive_article = ArticleCandidate(
+        id="nasa-possessive",
+        topic="SCIENCE",
+        title="NASA tests wastewater system for future Moon base",
+        source="NASA",
+        url="https://www.nasa.gov/kennedy/wastewater-treatment-moon-base",
+        description=(
+            "NASA's Divergent Deployable Wastewater Treatment Facility, built at Kennedy "
+            "Space Center, is undergoing testing at the University of North Dakota."
+        ),
+    )
+
+    possessive_story = pipeline._normalized_story_from_article(possessive_article)
+
+    assert possessive_story["summary"].startswith("NASA's Divergent Deployable")
+    assert not possessive_story["summary"].startswith("'s")
+
 
 def test_quality_gate_rejects_unsupported_top_level_named_entities():
     pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
@@ -1071,6 +1097,9 @@ def test_quality_gate_rejects_clipped_visible_copy():
     brief = valid_quality_brief()
     brief["headline"] = "Kuwait says it faced a missile and drone attack, another"
     brief["summary"] = "A concise summary starts well but trails off..."
+    brief["quick_hits"].append(
+        "Sydney academic used AI to write SMH opinion piece urging students to avoid using"
+    )
     brief["sections"][0]["summary"] = (
         "Democratic state Rep. Josh Turek will face Republican U.S. Rep. "
         "Ashley Hinson in the Senate race. For governor"

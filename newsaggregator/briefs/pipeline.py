@@ -477,6 +477,7 @@ DANGLING_COPY_ENDINGS: set[str] = {
     "this",
     "to",
     "under",
+    "using",
     "was",
     "were",
     "while",
@@ -614,7 +615,10 @@ def _has_terminal_sentence_fragment(text: str) -> bool:
 
 
 def _is_short_sentence_fragment(text: str) -> bool:
-    words = re.findall(r"\b[\w'-]+\b", _clean_text(text).strip(" .!?"))
+    fragment = _clean_text(text).strip(" .!?")
+    if re.fullmatch(r"(?:[A-Z]\.?){2,}", fragment):
+        return True
+    words = re.findall(r"\b[\w'-]+\b", fragment)
     if not words:
         return False
     if words[0].lower() not in FRAGMENT_SENTENCE_STARTERS:
@@ -2504,7 +2508,7 @@ Sports score packet:
         headline = _trim_words_plain(raw_headline, 10)
         dek = _trim_words(raw_dek, 22)
         summary = _trim_words(raw_summary, 70)
-        quick_hits = _trim_items(payload.get("quick_hits", []), max_items=6, max_words=14)
+        quick_hits = _trim_items(payload.get("quick_hits", []), max_items=6, max_words=18)
 
         derived_dek, derived_summary, derived_quick_hits = cls._top_level_copy_from_stories(stories)
         if (
@@ -2577,9 +2581,9 @@ Sports score packet:
             summary = _trim_words(" ".join(titles[:6]), 70)
 
         quick_hits = [
-            _trim_words_plain(title, 14)
+            _trim_words_plain(title, 18)
             for title in titles[:6]
-            if _trim_words_plain(title, 14)
+            if _trim_words_plain(title, 18)
         ]
         return dek, summary, quick_hits
 
@@ -2759,6 +2763,12 @@ Sports score packet:
         if any(marker in lowered for marker in BOILERPLATE_COPY_MARKERS):
             return True
         if DailyBriefPipeline._has_visible_truncation(cleaned):
+            return True
+        if re.match(
+            r"^(?:['’]s|is|are|was|were|has|have|had|will|would|could|can|"
+            r"should|may|might|must|being|been)\b",
+            lowered,
+        ):
             return True
         if cleaned[-1:] in {",", ":", ";", "-", "–", "—"}:
             return True
@@ -4314,7 +4324,9 @@ Generated at: {generated_at}
         if cleaned_title and text.lower().startswith(cleaned_title.lower()):
             text = text[len(cleaned_title):].strip(" -|.;:")
         if cleaned_source and text.lower().startswith(cleaned_source.lower()):
-            text = text[len(cleaned_source):].strip(" -|.;:")
+            suffix = text[len(cleaned_source):]
+            if not suffix.lstrip().lower().startswith(("'s", "’s")):
+                text = suffix.strip(" -|.;:")
 
         cleaned = _clean_text(text)
         lowered = cleaned.lower()
