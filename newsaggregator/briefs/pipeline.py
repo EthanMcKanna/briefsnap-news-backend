@@ -1471,9 +1471,20 @@ Sports score packet:
                 repaired["why_it_matters"] = self._default_why_for_topic(topic)
             repaired_stories.append(repaired)
 
-        if len(repaired_stories) < 6:
-            return brief
-
+        repaired_story_ids = {str(story.get("id")) for story in repaired_stories if story.get("id")}
+        if len(repaired_stories) < 12:
+            for article in articles:
+                if article.id in repaired_story_ids:
+                    continue
+                candidate = self._normalized_story_from_article(article)
+                if not self._story_passes_editorial_gate(candidate):
+                    continue
+                repaired_stories.append(candidate)
+                repaired_story_ids.add(article.id)
+                if len(repaired_stories) >= 12:
+                    break
+        self._ensure_sports_news_stories(repaired_stories, articles, repaired_story_ids)
+        self._ensure_topic_breadth_stories(repaired_stories, articles, repaired_story_ids)
         repaired_stories = self._filter_story_list_for_publish(repaired_stories)
         if len(repaired_stories) < 6:
             return brief
