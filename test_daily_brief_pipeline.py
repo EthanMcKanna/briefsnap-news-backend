@@ -973,6 +973,9 @@ def test_story_normalization_drops_scraped_source_boilerplate():
         title="Trump floats MAGA rally instead of concert",
         source="NPR",
     ) == ""
+    assert DailyBriefPipeline._is_unpolished_copy(
+        "Trade minister says Australia has robust legislation. Get our breaking news email"
+    )
 
 
 def test_story_normalization_replaces_junk_model_summary_and_keeps_source_topic():
@@ -3504,6 +3507,12 @@ def test_sports_story_filter_rejects_political_drift_without_word_substring_fals
         source="BBC News",
         url="https://www.bbc.com/news/articles/canada-usmca-renewal",
         description="A trade minister asked counterparts to renew the USMCA trade pact.",
+    )
+    assert not DailyBriefPipeline._is_high_signal_sports_candidate(
+        title="Iran and the US trade strikes in the Persian Gulf, further testing the ceasefire",
+        source="Associated Press",
+        url="https://apnews.com/article/iran-us-persian-gulf-strikes",
+        description="Kuwait briefly shut the country's main airport after Iranian drones damaged it.",
     )
     assert not DailyBriefPipeline._is_high_signal_sports_candidate(
         title="A science powerhouse bets on genetic therapy to beat brain disorders",
