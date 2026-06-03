@@ -1239,6 +1239,7 @@ def test_coverage_report_counts_sources_topics_and_images():
         stories=stories,
         articles=articles,
         sections=sections,
+        candidate_topic_counts={"TOP_NEWS": 5, "WORLD": 4},
         now=datetime(2026, 5, 12, tzinfo=timezone.utc),
     )
 
@@ -1247,6 +1248,7 @@ def test_coverage_report_counts_sources_topics_and_images():
     assert report["leading_trusted_story_count"] >= 5
     assert report["story_image_count"] == 2
     assert report["story_topic_counts"]["TOP_NEWS"] == 2
+    assert report["candidate_topic_counts"] == {"TOP_NEWS": 5, "WORLD": 4}
     assert "TOP_NEWS" in report["section_topics"]
 
 
@@ -2115,6 +2117,75 @@ def test_quality_gate_rejects_source_packet_topic_floor_gaps():
 
     assert (
         "source packet misses V8 topic floors: TOP_NEWS 6/8, HEALTH 1/2, SPORTS 2/3"
+        in issues
+    )
+
+
+def test_quality_gate_allows_topic_floor_limited_by_available_candidates():
+    brief = valid_quality_brief()
+    brief["coverage_report"] = {
+        "source_packet_count": 35,
+        "source_packet_domains": 14,
+        "candidate_topic_counts": {
+            "TOP_NEWS": 7,
+            "WORLD": 4,
+            "BUSINESS": 4,
+            "TECHNOLOGY": 4,
+            "HEALTH": 2,
+            "SCIENCE": 2,
+            "SPORTS": 3,
+            "ENTERTAINMENT": 1,
+        },
+        "topic_counts": {
+            "TOP_NEWS": 7,
+            "WORLD": 4,
+            "BUSINESS": 4,
+            "TECHNOLOGY": 4,
+            "HEALTH": 2,
+            "SCIENCE": 2,
+            "SPORTS": 3,
+            "ENTERTAINMENT": 1,
+        },
+    }
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+
+    issues = pipeline._brief_quality_issues(brief)
+
+    assert not any("source packet misses V8 topic floors" in issue for issue in issues)
+
+
+def test_quality_gate_rejects_source_packet_below_available_topic_pool():
+    brief = valid_quality_brief()
+    brief["coverage_report"] = {
+        "source_packet_count": 35,
+        "source_packet_domains": 14,
+        "candidate_topic_counts": {
+            "TOP_NEWS": 7,
+            "WORLD": 4,
+            "BUSINESS": 4,
+            "TECHNOLOGY": 4,
+            "HEALTH": 2,
+            "SCIENCE": 2,
+            "SPORTS": 3,
+            "ENTERTAINMENT": 1,
+        },
+        "topic_counts": {
+            "TOP_NEWS": 6,
+            "WORLD": 4,
+            "BUSINESS": 4,
+            "TECHNOLOGY": 4,
+            "HEALTH": 2,
+            "SCIENCE": 2,
+            "SPORTS": 3,
+            "ENTERTAINMENT": 1,
+        },
+    }
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+
+    issues = pipeline._brief_quality_issues(brief)
+
+    assert (
+        "source packet misses V8 topic floors: TOP_NEWS 6/7 available (floor 8)"
         in issues
     )
 

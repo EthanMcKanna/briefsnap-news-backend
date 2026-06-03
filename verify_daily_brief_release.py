@@ -172,6 +172,7 @@ def audit_daily_brief(
 
     coverage = brief.get("coverage_report") if isinstance(brief.get("coverage_report"), dict) else {}
     source_packet_topic_counts = coverage.get("topic_counts")
+    source_candidate_topic_counts = coverage.get("candidate_topic_counts")
     summary = {
         "story_count": len(stories),
         "valid_image_count": valid_image_count,
@@ -179,6 +180,9 @@ def audit_daily_brief(
         "source_packet_domains": coverage.get("source_packet_domains"),
         "source_packet_topic_counts": dict(sorted(source_packet_topic_counts.items()))
         if isinstance(source_packet_topic_counts, dict)
+        else None,
+        "source_candidate_topic_counts": dict(sorted(source_candidate_topic_counts.items()))
+        if isinstance(source_candidate_topic_counts, dict)
         else None,
         "leading_trusted_story_count": coverage.get("leading_trusted_story_count"),
         "max_leading_domain_count": coverage.get("max_leading_domain_count"),

@@ -741,6 +741,7 @@ class DailyBriefPipeline:
         self.gemini_key = self.gemini_keys[0] if self.gemini_keys else None
         self.today_id = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         self.sports_score_cards: list[dict[str, Any]] = []
+        self.source_candidate_topic_counts: dict[str, int] = {}
 
     def run(self) -> dict[str, Any]:
         start = time.time()
@@ -793,6 +794,15 @@ class DailyBriefPipeline:
             print(f"{topic.code}: selected {len(topic_selection)}")
 
         deduped = self._dedupe(candidates)
+        self.source_candidate_topic_counts = dict(
+            sorted(
+                Counter(
+                    self._normalize_topic(article.topic)
+                    for article in deduped
+                    if article.topic
+                ).items()
+            )
+        )
         source_packet = self._diversify_articles(deduped, limit=self.options.max_total_articles)
         enriched = self._enrich_articles(source_packet)
         enriched = self._ensure_source_packet_topic_floors(
@@ -1351,6 +1361,7 @@ Sports score packet:
                 stories=normalized_stories[:18],
                 articles=articles,
                 sections=sections,
+                candidate_topic_counts=self.source_candidate_topic_counts,
             ),
         }
         brief.update(self._sports_scores_metadata(score_cards))
@@ -2212,6 +2223,7 @@ Sports score packet:
                 stories=stories,
                 articles=articles,
                 sections=sections,
+                candidate_topic_counts=self.source_candidate_topic_counts,
             ),
         }
         brief.update(self._sports_scores_metadata(score_cards))
@@ -2631,6 +2643,7 @@ Sports score packet:
         stories: list[dict[str, Any]],
         articles: list[ArticleCandidate] | None = None,
         sections: list[dict[str, Any]] | None = None,
+        candidate_topic_counts: dict[str, int] | None = None,
         now: datetime | None = None,
     ) -> dict[str, Any]:
         articles = articles or []
@@ -2650,6 +2663,11 @@ Sports score packet:
             if story.get("url")
         ]
         topic_counts = Counter(cls._normalize_topic(article.topic) for article in articles if article.topic)
+        normalized_candidate_topic_counts = {
+            cls._normalize_topic(topic): int(count or 0)
+            for topic, count in (candidate_topic_counts or {}).items()
+            if topic
+        }
         story_topic_counts = Counter(cls._normalize_topic(story.get("topic")) for story in stories if story.get("topic"))
         leading_domain_counts = Counter(domain for domain in leading_domains if domain)
         leading_ages = [
@@ -2680,6 +2698,7 @@ Sports score packet:
             ),
             "sports_story_count": story_topic_counts.get("SPORTS", 0),
             "topic_counts": dict(sorted(topic_counts.items())),
+            "candidate_topic_counts": dict(sorted(normalized_candidate_topic_counts.items())),
             "story_topic_counts": dict(sorted(story_topic_counts.items())),
             "section_topics": [
                 cls._normalize_topic(section.get("topic"))
@@ -3086,15 +3105,28 @@ Sports score packet:
                 self._normalize_topic(topic): int(count or 0)
                 for topic, count in (raw_topic_counts or {}).items()
             }
+            raw_candidate_topic_counts = coverage.get("candidate_topic_counts")
+            available_topic_counts = {
+                self._normalize_topic(topic): int(count or 0)
+                for topic, count in (raw_candidate_topic_counts or {}).items()
+            } if isinstance(raw_candidate_topic_counts, dict) else {}
             if source_packet_count >= MIN_V8_SOURCE_PACKET_COUNT:
                 if not source_topic_counts:
                     issues.append("source packet is missing topic coverage counts")
                 else:
-                    floor_gaps = [
-                        f"{topic} {source_topic_counts.get(topic, 0)}/{minimum}"
-                        for topic, minimum in SOURCE_PACKET_TOPIC_MINIMUMS.items()
-                        if source_topic_counts.get(topic, 0) < minimum
-                    ]
+                    floor_gaps = []
+                    for topic, minimum in SOURCE_PACKET_TOPIC_MINIMUMS.items():
+                        available = available_topic_counts.get(topic)
+                        target = min(minimum, available) if available is not None else minimum
+                        actual = source_topic_counts.get(topic, 0)
+                        if target <= 0 or actual >= target:
+                            continue
+                        if available is not None and available < minimum:
+                            floor_gaps.append(
+                                f"{topic} {actual}/{target} available (floor {minimum})"
+                            )
+                        else:
+                            floor_gaps.append(f"{topic} {actual}/{minimum}")
                     if floor_gaps:
                         issues.append(
                             "source packet misses V8 topic floors: "
