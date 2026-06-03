@@ -459,8 +459,12 @@ DANGLING_COPY_ENDINGS: set[str] = {
     "departed",
     "for",
     "from",
+    "had",
+    "has",
+    "have",
     "in",
     "into",
+    "is",
     "of",
     "on",
     "or",
@@ -1379,7 +1383,12 @@ Sports score packet:
         title = self._clean_title(article.title or story.get("title"), source=source)
         summary = self._clean_description(story.get("summary") or "", title=title, source=source)
         summary = _collapse_visible_truncation(summary)
-        if self._is_bad_story_summary(summary, title=title, source=source, url=article.url):
+        if self._is_bad_story_summary(
+            summary,
+            title=title,
+            source=source,
+            url=article.url,
+        ) or not self._story_copy_is_supported_by_article(summary, article, title=title, source=source):
             summary = ""
         if not summary:
             summary = self._clean_description(article.description or "", title=title, source=source)
@@ -1399,6 +1408,18 @@ Sports score packet:
         if _word_count(summary_text) > 28:
             summary_text = _trim_words(summary, 27)
 
+        raw_why = story.get("why_it_matters")
+        why_copy = _clean_text(raw_why or "")
+        if raw_why and not self._story_copy_is_supported_by_article(
+            why_copy,
+            article,
+            title=title,
+            source=source,
+        ):
+            why_copy = ""
+        if not why_copy:
+            why_copy = why_it_matters or self._default_why_it_matters(article)
+
         return {
             "id": article.id,
             "topic": topic,
@@ -1406,10 +1427,7 @@ Sports score packet:
             "source": source,
             "url": article.url,
             "summary": summary_text,
-            "why_it_matters": _trim_words(
-                story.get("why_it_matters") or why_it_matters or self._default_why_it_matters(article),
-                18,
-            ),
+            "why_it_matters": _trim_words(why_copy, 18),
             "urgency": _clean_text(story.get("urgency") or "medium").lower() or "medium",
             "published_at": article.published_at,
             "image_url": self._story_image_url(article.image_url),
@@ -2496,6 +2514,79 @@ Sports score packet:
         }
         corpus_tokens.discard("")
         return all(term in corpus_terms or term in corpus_tokens for term in terms)
+
+    @classmethod
+    def _story_copy_is_supported_by_article(
+        cls,
+        text: Any,
+        article: ArticleCandidate,
+        *,
+        title: str = "",
+        source: str = "",
+    ) -> bool:
+        cleaned = _clean_text(text)
+        if not cleaned:
+            return False
+        if cls._is_unpolished_copy(cleaned):
+            return False
+
+        support_text = " ".join(
+            str(value or "")
+            for value in (
+                title,
+                article.title,
+                source,
+                article.source,
+                article.url,
+                article.description,
+                article.content[:1200],
+            )
+        )
+        support_terms = cls._entity_terms(support_text)
+        support_tokens = cls._meaningful_copy_tokens(support_text)
+        for term in cls._entity_terms(cleaned):
+            if term not in support_terms and term not in support_tokens:
+                return False
+
+        copy_tokens = cls._meaningful_copy_tokens(cleaned)
+        if len(copy_tokens) >= 5 and support_tokens and not (copy_tokens & support_tokens):
+            return False
+        return True
+
+    @staticmethod
+    def _meaningful_copy_tokens(text: Any) -> set[str]:
+        stopwords = TOP_LEVEL_COPY_ENTITY_STOPWORDS | {
+            "affect",
+            "adds",
+            "advance",
+            "advances",
+            "change",
+            "changes",
+            "clear",
+            "context",
+            "critical",
+            "current",
+            "decision",
+            "decisions",
+            "development",
+            "developments",
+            "effect",
+            "evidence",
+            "important",
+            "matter",
+            "matters",
+            "near",
+            "next",
+            "planning",
+            "shift",
+            "updates",
+        }
+        return {
+            re.sub(r"[^a-z0-9]+", "", token.lower())
+            for token in re.findall(r"\b[\w'-]{4,}\b", str(text or ""))
+            if re.sub(r"[^a-z0-9]+", "", token.lower())
+            and re.sub(r"[^a-z0-9]+", "", token.lower()) not in stopwords
+        }
 
     @staticmethod
     def _entity_terms(text: Any) -> set[str]:

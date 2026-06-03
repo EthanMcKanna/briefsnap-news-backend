@@ -939,6 +939,67 @@ def test_story_normalization_replaces_junk_model_summary_and_keeps_source_topic(
     assert story["summary"] != "com"
 
 
+def test_story_normalization_replaces_cross_article_model_copy():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    article = ArticleCandidate(
+        id="remote-work-grads",
+        topic="BUSINESS",
+        title="Remote work -- not AI -- has sidelined recent college graduates, research finds",
+        source="NPR Topics: Business",
+        url="https://www.npr.org/2026/06/01/nx-s1-5843076/remote-work-college-graduates-unemployment-ai",
+        description=(
+            "Research finds remote work has reduced entry-level training and left "
+            "recent college graduates with fewer paths into the labor market."
+        ),
+    )
+
+    story = pipeline._normalized_story_from_article(
+        article,
+        story={
+            "summary": "NASA is testing a mobile wastewater treatment facility at the University of North Dakota",
+            "why_it_matters": "Advances critical life support technology for deep space exploration.",
+        },
+    )
+
+    assert story["summary"].startswith("Research finds remote work")
+    assert "NASA" not in story["summary"]
+    assert story["why_it_matters"] == "It can affect markets, companies, or household costs"
+
+
+def test_story_normalization_rejects_dangling_and_unrelated_model_copy():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    article = ArticleCandidate(
+        id="rams-garrett",
+        topic="SPORTS",
+        title="McVay talks Rams' pursuit of Garrett, possible Donald return",
+        source="ESPN",
+        url="https://www.espn.com/nfl/story/_/id/48951573/mcvay-rams-aggressive-shot-land-star-garrett",
+        description=(
+            "Sean McVay discussed the Rams' aggressive pursuit of Myles Garrett "
+            "and whether Aaron Donald could return."
+        ),
+    )
+
+    story = pipeline._normalized_story_from_article(
+        article,
+        story={
+            "summary": (
+                "The film 'Dreams of Violets,' premiering at the Tribeca Film Festival, "
+                "was created almost entirely using artificial intelligence"
+            ),
+            "why_it_matters": "Explores the disruptive potential of AI in the creative industries.",
+        },
+    )
+
+    assert story["summary"].startswith("Sean McVay discussed")
+    assert "Dreams of Violets" not in story["summary"]
+    assert story["why_it_matters"] == "It gives fans verified context beyond the scoreboard"
+
+    assert DailyBriefPipeline._is_unpolished_copy(
+        "A Sydney academic used artificial intelligence to write an opinion piece. The university has"
+    )
+
+
 def test_quality_gate_rejects_unsupported_top_level_named_entities():
     pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
     brief = valid_quality_brief()
