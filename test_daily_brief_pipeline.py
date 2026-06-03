@@ -1094,6 +1094,25 @@ def test_story_normalization_rejects_scraped_noun_phrase_summary():
     assert not possessive_story["summary"].startswith("'s")
 
 
+def test_repairs_missing_apostrophe_in_its_after_reporting_verb():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    article = ArticleCandidate(
+        id="science-funding-rule",
+        topic="SCIENCE",
+        title="Administration moves science funding under tighter political control",
+        source="NPR",
+        url="https://www.npr.org/2026/06/03/science-funding-rule",
+        description=(
+            "A new rule could shift how science funding works in the U.S. "
+            "The administration says its an effort to deter waste."
+        ),
+    )
+
+    story = pipeline._normalized_story_from_article(article)
+
+    assert "says it's an effort" in story["summary"]
+
+
 def test_quality_gate_rejects_unsupported_top_level_named_entities():
     pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
     brief = valid_quality_brief()
@@ -1229,6 +1248,35 @@ def test_normalize_widgets_summarizes_only_visible_items():
     assert technology_widget["items"][0] == visible_title
     assert technology_widget["summary"] == stories[1]["summary"].rstrip(".")
     assert "generative video tools" not in technology_widget["summary"]
+
+
+def test_normalize_widgets_strips_dangling_to_be_item_endings():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    title = "California's primary for governor is undecided as candidates vie to be in the top two"
+    stories = [
+        {
+            "id": "california-primary",
+            "topic": "TOP_NEWS",
+            "title": title,
+            "summary": "Candidates are competing to reach the general election ballot.",
+        }
+    ]
+    articles = [
+        ArticleCandidate(
+            id="california-primary",
+            topic="TOP_NEWS",
+            title=title,
+            source="AP News",
+            url="https://apnews.com/article/california-primary",
+            description=stories[0]["summary"],
+        )
+    ]
+
+    widgets = pipeline._normalize_widgets([], stories, articles)
+    top_news_widget = next(widget for widget in widgets if widget["topic"] == "TOP_NEWS")
+
+    assert top_news_widget["items"][0] == "California's primary for governor is undecided as candidates vie"
+    assert not top_news_widget["items"][0].endswith("to be")
 
 
 def test_grounded_top_level_copy_refreshes_old_fallback_dek():

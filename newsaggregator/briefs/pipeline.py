@@ -453,6 +453,7 @@ DANGLING_COPY_ENDINGS: set[str] = {
     "as",
     "at",
     "are",
+    "be",
     "because",
     "but",
     "by",
@@ -516,6 +517,12 @@ FRAGMENT_SENTENCE_STARTERS: set[str] = {
 def _clean_text(value: Any) -> str:
     text = html.unescape(str(value or "")).replace("\xa0", " ")
     text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(
+        r"\b(says|said|claims|claimed|calls|called|argues|argued)\s+its\s+(a|an)\b",
+        lambda match: f"{match.group(1)} it's {match.group(2)}",
+        text,
+        flags=re.IGNORECASE,
+    )
     for phrase in EDITORIAL_FILLER_PHRASES:
         if phrase in text.lower():
             text = re.sub(re.escape(phrase), "", text, flags=re.IGNORECASE).strip(" .;-")
