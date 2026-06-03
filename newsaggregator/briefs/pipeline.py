@@ -2774,11 +2774,11 @@ Sports score packet:
         dek_refs = [ref for ref in (cls._compact_title_reference(title) for title in titles) if ref]
         if len(dek_refs) >= 3:
             dek = _trim_words(
-                f"{dek_refs[0]}, {dek_refs[1]}, and {dek_refs[2]} lead today's brief.",
+                f"Lead stories: {dek_refs[0]}; {dek_refs[1]}; {dek_refs[2]}.",
                 22,
             )
         elif len(dek_refs) >= 2:
-            dek = _trim_words(f"{dek_refs[0]} and {dek_refs[1]} lead today's brief.", 22)
+            dek = _trim_words(f"Lead stories: {dek_refs[0]}; {dek_refs[1]}.", 22)
         elif titles:
             dek = _trim_words(titles[0], 22)
         else:
@@ -2811,7 +2811,7 @@ Sports score packet:
     @staticmethod
     def _is_formulaic_top_level_dek(text: Any) -> bool:
         lowered = _clean_text(text).lower()
-        return " leads alongside " in lowered
+        return " leads alongside " in lowered or " lead today's brief" in lowered
 
     @classmethod
     def _compact_title_reference(cls, title: Any) -> str:

@@ -1407,7 +1407,7 @@ def test_grounded_top_level_copy_refreshes_old_fallback_dek():
     )
 
     assert "leads alongside" not in dek
-    assert "lead today's brief" in dek
+    assert "Lead stories:" in dek
     assert "First current story" in dek
     assert "Second current story" in dek
 
@@ -1431,7 +1431,8 @@ def test_top_level_dek_does_not_comma_join_sentence_punctuation():
     dek, _, _ = DailyBriefPipeline._top_level_copy_from_stories(stories)
 
     assert ".," not in dek
-    assert dek.startswith("The world is connected by copper, Iran fires")
+    assert dek.startswith("Lead stories: The world is connected by copper; Iran fires")
+    assert "copper, Iran" not in dek
 
 
 def test_title_compaction_keeps_complete_short_action_phrases():
