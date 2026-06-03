@@ -1186,6 +1186,70 @@ def test_section_sanitizer_rebuilds_summary_from_visible_story_ids():
     assert "Florida sues OpenAI" not in sanitized[0]["summary"]
 
 
+def test_normalize_widgets_summarizes_only_visible_items():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    hidden_title = "‘The CGI would have cost millions. I spent $2,000.’ Is Dreams of Violets AI slop"
+    visible_title = "Trump signs AI safety order seeking voluntary review of new models"
+    stories = [
+        {
+            "id": "hidden-ai-film",
+            "topic": "TECHNOLOGY",
+            "title": hidden_title,
+            "summary": "A festival drama uses generative video tools to recreate political violence.",
+        },
+        {
+            "id": "visible-ai-order",
+            "topic": "TECHNOLOGY",
+            "title": visible_title,
+            "summary": "President Trump signed an order asking AI companies to submit new models for testing.",
+        },
+        {
+            "id": "visible-ai-lawsuit",
+            "topic": "TECHNOLOGY",
+            "title": "Florida sues OpenAI and Sam Altman over alleged safety lapses",
+            "summary": "Florida alleges the company failed to warn users about chatbot safety risks.",
+        },
+    ]
+    articles = [
+        ArticleCandidate(
+            id=story["id"],
+            topic=story["topic"],
+            title=story["title"],
+            source="The Verge",
+            url=f"https://www.theverge.com/{story['id']}",
+            description=story["summary"],
+        )
+        for story in stories
+    ]
+
+    widgets = pipeline._normalize_widgets([], stories, articles)
+    technology_widget = next(widget for widget in widgets if widget["topic"] == "TECHNOLOGY")
+
+    assert hidden_title not in technology_widget["items"]
+    assert technology_widget["items"][0] == visible_title
+    assert technology_widget["summary"] == stories[1]["summary"].rstrip(".")
+    assert "generative video tools" not in technology_widget["summary"]
+
+
+def test_grounded_top_level_copy_refreshes_old_fallback_dek():
+    payload = {
+        "headline": "Court ruling reshapes federal immigration enforcement",
+        "dek": "Court ruling reshapes federal immigration enforcement leads alongside Storm recovery costs rise across the Gulf Coast.",
+        "summary": "A concise source-backed update with enough detail for the brief.",
+        "quick_hits": ["Court ruling reshapes federal immigration enforcement"],
+    }
+
+    _, dek, _, _ = DailyBriefPipeline._grounded_top_level_copy(
+        payload=payload,
+        stories=valid_quality_brief()["stories"],
+    )
+
+    assert "leads alongside" not in dek
+    assert "lead today's brief" in dek
+    assert "First current story" in dek
+    assert "Second current story" in dek
+
+
 def test_feed_cleanup_removes_google_news_cluster_artifacts():
     raw_description = (
         "France moves to repeal Code Noir, the slavery law it never abolished "

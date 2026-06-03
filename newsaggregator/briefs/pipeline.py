@@ -2627,6 +2627,7 @@ Sports score packet:
         if (
             not dek
             or cls._is_unpolished_copy(dek)
+            or cls._is_formulaic_top_level_dek(dek)
             or cls._has_visible_truncation(raw_dek)
             or not cls._copy_is_grounded_in_stories(dek, stories, grounding_texts=grounding_texts)
         ):
@@ -2658,8 +2659,14 @@ Sports score packet:
         stories: list[dict[str, Any]],
     ) -> tuple[str, str, list[str]]:
         titles = [_clean_text(story.get("title")) for story in stories if story.get("title")]
-        if len(titles) >= 2:
-            dek = _trim_words(f"{titles[0]} leads alongside {titles[1]}.", 22)
+        dek_refs = [ref for ref in (cls._compact_title_reference(title) for title in titles) if ref]
+        if len(dek_refs) >= 3:
+            dek = _trim_words(
+                f"{dek_refs[0]}, {dek_refs[1]}, and {dek_refs[2]} lead today's brief.",
+                22,
+            )
+        elif len(dek_refs) >= 2:
+            dek = _trim_words(f"{dek_refs[0]} and {dek_refs[1]} lead today's brief.", 22)
         elif titles:
             dek = _trim_words(titles[0], 22)
         else:
@@ -2688,6 +2695,21 @@ Sports score packet:
             if _trim_words_plain(title, 18)
         ]
         return dek, summary, quick_hits
+
+    @staticmethod
+    def _is_formulaic_top_level_dek(text: Any) -> bool:
+        lowered = _clean_text(text).lower()
+        return " leads alongside " in lowered
+
+    @classmethod
+    def _compact_title_reference(cls, title: Any) -> str:
+        words = _clean_text(title).split()
+        for max_words in (5, 4, 3):
+            compact = " ".join(words[:max_words]).strip(" ,;:-")
+            compact = _strip_dangling_copy_ending(compact)
+            if compact and not cls._is_unpolished_copy(compact):
+                return compact
+        return ""
 
     @staticmethod
     def _ensure_sentence(value: str) -> str:
@@ -3845,27 +3867,38 @@ Sports score packet:
             if topic in seen_topics or not group:
                 continue
             related_stories = [story for story in stories if story.get("topic") == topic]
-            items = [story["title"] for story in related_stories[:4] if story.get("title")]
+            story_item_pairs: list[tuple[str, dict[str, Any]]] = []
+            for story in related_stories[:4]:
+                item = _trim_words(story.get("title"), 12)
+                if item and not self._is_unpolished_copy(item):
+                    story_item_pairs.append((item, story))
+            items = [item for item, _ in story_item_pairs]
+            visible_item_stories = [story for _, story in story_item_pairs]
+
+            article_item_pairs: list[tuple[str, ArticleCandidate]] = []
             if not items:
-                items = [article.title for article in group[:4]]
-            summary = ""
-            if related_stories:
-                summary = str(related_stories[0].get("summary") or "").strip()
+                for article in group[:4]:
+                    item = _trim_words(article.title, 12)
+                    if item and not self._is_unpolished_copy(item):
+                        article_item_pairs.append((item, article))
+                items = [item for item, _ in article_item_pairs]
+
+            summary = self._widget_summary_fallback(topic, visible_item_stories, items)
+            if not summary and article_item_pairs:
+                for _, article in article_item_pairs:
+                    summary = _trim_words(article.description or article.content[:220], 24)
+                    if summary and not self._is_unpolished_copy(summary):
+                        break
             if not summary:
-                summary = (group[0].description or group[0].content[:220] or "Latest selected updates.").strip()
-            summary = _trim_words(summary, 24)
-            if self._is_unpolished_copy(summary):
-                summary = self._widget_summary_fallback(topic, stories, items)
+                summary = self._widget_summary_fallback(topic, [], items)
+            if not summary and not items:
+                continue
             widgets.append(
                 {
                     "topic": topic,
                     "title": self._topic_name(topic),
                     "summary": summary,
-                    "items": [
-                        item
-                        for item in _trim_items(items, max_items=5, max_words=12)
-                        if not self._is_unpolished_copy(item)
-                    ],
+                    "items": items[:5],
                 }
             )
             seen_topics.add(topic)
