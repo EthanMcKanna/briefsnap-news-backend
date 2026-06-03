@@ -996,6 +996,21 @@ def test_feed_cleanup_removes_google_news_cluster_artifacts():
         )
         == "Sydney crowd told to target National MPs before a vote."
     )
+    assert (
+        DailyBriefPipeline._clean_description(
+            (
+                "Three studies add to evidence that jabs could be part of cancer-fighting "
+                "toolkit to cut risk of developing or dying from disease Weight-loss drugs "
+                "can cut the risk by up to 30%."
+            ),
+            title="Weight-loss drugs can cut breast cancer risk by up to 30%, studies suggest",
+            source="The Guardian",
+        )
+        == (
+            "Three studies add to evidence that jabs could be part of cancer-fighting "
+            "toolkit to cut risk of developing or dying from disease"
+        )
+    )
 
 
 def test_quality_gate_rejects_visible_html_artifacts():

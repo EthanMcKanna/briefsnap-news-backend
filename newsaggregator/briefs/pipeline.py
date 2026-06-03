@@ -4000,6 +4000,14 @@ Generated at: {generated_at}
                 cleaned = _clean_text(cleaned[:index])
                 lowered = cleaned.lower()
                 break
+        if cleaned_title:
+            title_words = cleaned_title.split()[:4]
+            if len(title_words) >= 4:
+                title_marker = " ".join(title_words).lower()
+                index = lowered.find(title_marker)
+                if index >= 40:
+                    cleaned = _clean_text(cleaned[:index])
+                    lowered = cleaned.lower()
         lowered = cleaned.lower()
         if any(marker in lowered for marker in BOILERPLATE_COPY_MARKERS):
             return ""
