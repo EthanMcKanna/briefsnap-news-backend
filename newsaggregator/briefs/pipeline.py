@@ -795,6 +795,11 @@ class DailyBriefPipeline:
         deduped = self._dedupe(candidates)
         source_packet = self._diversify_articles(deduped, limit=self.options.max_total_articles)
         enriched = self._enrich_articles(source_packet)
+        enriched = self._ensure_source_packet_topic_floors(
+            enriched,
+            source_packet,
+            limit=self.options.max_total_articles,
+        )
         ranked = sorted(enriched, key=lambda article: article.score, reverse=True)
         return self._rebalance_article_order(
             self._diversify_articles(ranked, limit=self.options.max_total_articles)
@@ -3076,10 +3081,25 @@ Sports score packet:
                     f"source packet needs broader domain coverage: {source_packet_domains}"
                 )
 
+            raw_topic_counts = coverage.get("topic_counts")
             source_topic_counts = {
                 self._normalize_topic(topic): int(count or 0)
-                for topic, count in (coverage.get("topic_counts") or {}).items()
+                for topic, count in (raw_topic_counts or {}).items()
             }
+            if source_packet_count >= MIN_V8_SOURCE_PACKET_COUNT:
+                if not source_topic_counts:
+                    issues.append("source packet is missing topic coverage counts")
+                else:
+                    floor_gaps = [
+                        f"{topic} {source_topic_counts.get(topic, 0)}/{minimum}"
+                        for topic, minimum in SOURCE_PACKET_TOPIC_MINIMUMS.items()
+                        if source_topic_counts.get(topic, 0) < minimum
+                    ]
+                    if floor_gaps:
+                        issues.append(
+                            "source packet misses V8 topic floors: "
+                            + ", ".join(floor_gaps)
+                        )
             supported_topics = [
                 topic
                 for topic in TOPIC_PRIORITY
@@ -4563,6 +4583,27 @@ Generated at: {generated_at}
                 domain_counts[domain] = domain_counts.get(domain, 0) + 1
                 topic_counts[article.topic] = topic_counts.get(article.topic, 0) + 1
 
+        selected = DailyBriefPipeline._ensure_source_packet_topic_floors(
+            selected,
+            articles,
+            limit=limit,
+        )
+        if limit >= 24:
+            selected = DailyBriefPipeline._ensure_minimum_source_domains(
+                selected,
+                articles,
+                minimum=MIN_V8_SOURCE_PACKET_DOMAINS,
+                limit=limit,
+            )
+        return selected
+
+    @staticmethod
+    def _ensure_source_packet_topic_floors(
+        selected: list[ArticleCandidate],
+        articles: list[ArticleCandidate],
+        *,
+        limit: int,
+    ) -> list[ArticleCandidate]:
         topic_minimums = (
             SOURCE_PACKET_TOPIC_MINIMUMS
             if limit >= 24
@@ -4574,13 +4615,6 @@ Generated at: {generated_at}
                 articles,
                 topic=topic,
                 minimum=minimum,
-                limit=limit,
-            )
-        if limit >= 24:
-            selected = DailyBriefPipeline._ensure_minimum_source_domains(
-                selected,
-                articles,
-                minimum=MIN_V8_SOURCE_PACKET_DOMAINS,
                 limit=limit,
             )
         return selected

@@ -1841,6 +1841,63 @@ def test_topic_floor_repair_replaces_overrepresented_topics_before_floor_topics(
     assert selected_topics["SCIENCE"] >= 2
 
 
+def test_source_packet_floor_repair_backfills_enrichment_dropouts():
+    source_packet: list[ArticleCandidate] = []
+    for topic, count in [
+        ("TOP_NEWS", 8),
+        ("WORLD", 4),
+        ("BUSINESS", 4),
+        ("TECHNOLOGY", 4),
+        ("HEALTH", 2),
+        ("SCIENCE", 2),
+        ("SPORTS", 3),
+        ("ENTERTAINMENT", 1),
+    ]:
+        for index in range(count):
+            title = (
+                f"NBA playoff rotation report changes matchup {index}"
+                if topic == "SPORTS"
+                else f"{topic} source-backed story {index}"
+            )
+            source_packet.append(
+                ArticleCandidate(
+                    id=f"{topic.lower()}-{index}",
+                    topic=topic,
+                    title=title,
+                    source="ESPN" if topic == "SPORTS" else "Associated Press",
+                    url=(
+                        f"https://www.espn.com/nba/story/_/id/{index}/playoff-rotation"
+                        if topic == "SPORTS"
+                        else f"https://source-{topic.lower()}-{index}.example.com/story"
+                    ),
+                    description="A current source-backed item with enough detail for the daily brief.",
+                    score=100 - len(source_packet),
+                )
+            )
+
+    enriched = [
+        article
+        for article in source_packet
+        if not (DailyBriefPipeline._normalize_topic(article.topic) == "TOP_NEWS" and article.id.endswith(("-6", "-7")))
+    ]
+
+    repaired = DailyBriefPipeline._ensure_source_packet_topic_floors(
+        enriched,
+        source_packet,
+        limit=len(source_packet),
+    )
+    selected_topics = Counter(DailyBriefPipeline._normalize_topic(article.topic) for article in repaired)
+
+    assert len(repaired) == len(source_packet)
+    assert selected_topics["TOP_NEWS"] == 8
+    assert selected_topics["WORLD"] >= 4
+    assert selected_topics["BUSINESS"] >= 4
+    assert selected_topics["TECHNOLOGY"] >= 4
+    assert selected_topics["HEALTH"] >= 2
+    assert selected_topics["SCIENCE"] >= 2
+    assert selected_topics["SPORTS"] >= 3
+
+
 def test_candidate_dedupe_removes_paraphrased_same_story_before_source_packet():
     articles = [
         ArticleCandidate(
@@ -2034,6 +2091,32 @@ def test_quality_gate_requires_supported_topic_breadth():
     issues = pipeline._brief_quality_issues(brief)
 
     assert any("visible stories miss source-supported coverage lanes" in issue for issue in issues)
+
+
+def test_quality_gate_rejects_source_packet_topic_floor_gaps():
+    brief = valid_quality_brief()
+    brief["coverage_report"] = {
+        "source_packet_count": 36,
+        "source_packet_domains": 14,
+        "topic_counts": {
+            "TOP_NEWS": 6,
+            "WORLD": 4,
+            "BUSINESS": 4,
+            "TECHNOLOGY": 4,
+            "HEALTH": 1,
+            "SCIENCE": 2,
+            "SPORTS": 2,
+            "ENTERTAINMENT": 1,
+        },
+    }
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+
+    issues = pipeline._brief_quality_issues(brief)
+
+    assert (
+        "source packet misses V8 topic floors: TOP_NEWS 6/8, HEALTH 1/2, SPORTS 2/3"
+        in issues
+    )
 
 
 def test_quality_gate_requires_science_when_source_supported():
