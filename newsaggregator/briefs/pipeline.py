@@ -2746,6 +2746,8 @@ Sports score packet:
             return True
         if re.search(r"\bif you(?:'re| are)? \d+$", lowered):
             return True
+        if re.search(r"\b(?:including|such as)\s+[a-z0-9'-]+$", lowered):
+            return True
         return False
 
     @staticmethod
@@ -2783,6 +2785,8 @@ Sports score packet:
             return True
         if _word_count(cleaned) < 5 or len(cleaned) < 28:
             return True
+        if cls._looks_like_noun_phrase_summary_fragment(cleaned):
+            return True
 
         source_key = re.sub(r"\W+", "", str(source or "").lower())
         domain = cls._domain_name(str(url or ""))
@@ -2799,6 +2803,18 @@ Sports score packet:
         if title and cls._same_title_fragment(cleaned, title):
             return True
         return False
+
+    @staticmethod
+    def _looks_like_noun_phrase_summary_fragment(text: Any) -> bool:
+        lowered = _clean_text(text).lower().strip(" .")
+        return bool(
+            re.match(
+                r"^(?:a|an|the)\b.+\b"
+                r"(?:built|created|developed|designed|made|produced|released|shipped|tested)\b"
+                r".+\bthat can\b",
+                lowered,
+            )
+        )
 
     @staticmethod
     def _hero_image_url(stories: list[dict[str, Any]]) -> str | None:

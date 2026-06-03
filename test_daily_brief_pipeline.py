@@ -1033,6 +1033,26 @@ def test_story_normalization_strips_terminal_fragment_sentence():
     assert not DailyBriefPipeline._is_unpolished_copy(story["summary"])
 
 
+def test_story_normalization_rejects_scraped_noun_phrase_summary():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    article = ArticleCandidate(
+        id="nasa-wastewater",
+        topic="SCIENCE",
+        title="NASA Testing Wastewater Treatment Facility for Future Moon Base",
+        source="NASA",
+        url="https://www.nasa.gov/kennedy/wastewater-treatment-moon-base",
+        description=(
+            "A mobile wastewater treatment system built at NASA’s Kennedy Space Center "
+            "in Florida that can help prepare for long-duration missions on the Moon and Mars"
+        ),
+    )
+
+    story = pipeline._normalized_story_from_article(article)
+
+    assert story["summary"] == "NASA Testing Wastewater Treatment Facility for Future Moon Base"
+    assert "that can help prepare" not in story["summary"]
+
+
 def test_quality_gate_rejects_unsupported_top_level_named_entities():
     pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
     brief = valid_quality_brief()
@@ -1064,7 +1084,16 @@ def test_quality_gate_rejects_clipped_visible_copy():
                 "Ashley Hinson in the Senate race. For governor"
             ),
             "items": ["Iowa voters pick their nominees"],
-        }
+        },
+        {
+            "topic": "HEALTH",
+            "title": "Health",
+            "summary": (
+                "For months ahead of the World Cup, states and cities have been preparing "
+                "for potential threats including foodborne"
+            ),
+            "items": ["Heat, bugs, germs: U.S. public health prepares for the World Cup"],
+        },
     ]
     brief["stories"][0]["summary"] = "A story summary starts with useful detail before it trails off..."
     brief["stories"][1]["summary"] = (
@@ -1090,6 +1119,7 @@ def test_quality_gate_rejects_clipped_visible_copy():
     assert "story story-4 contains visible truncation" in issues
     assert "TOP_NEWS section contains visible truncation" in issues
     assert "TOP_NEWS widget contains visible truncation" in issues
+    assert "HEALTH widget contains visible truncation" in issues
 
 
 def test_section_sanitizer_rebuilds_summary_from_visible_story_ids():
