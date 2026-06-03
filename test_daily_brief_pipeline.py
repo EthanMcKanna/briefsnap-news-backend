@@ -1019,6 +1019,13 @@ def test_quality_gate_rejects_clipped_visible_copy():
     brief["headline"] = "Kuwait says it faced a missile and drone attack, another"
     brief["summary"] = "A concise summary starts well but trails off..."
     brief["stories"][0]["summary"] = "A story summary starts with useful detail before it trails off..."
+    brief["stories"][1]["summary"] = (
+        "\"If you're 22 years old in San Francisco and building something in AI, "
+        "there may be a seed term sheet in your inbox, but if you're 19"
+    )
+    brief["stories"][2]["summary"] = (
+        "San Diego may have water to sell to states that are seeing their supplies"
+    )
 
     issues = pipeline._brief_quality_issues(brief)
 
@@ -1026,6 +1033,28 @@ def test_quality_gate_rejects_clipped_visible_copy():
     assert "top-level brief copy has clipped phrasing" in issues
     assert "story story-1 contains visible truncation" in issues
     assert "story story-1 has clipped copy" in issues
+    assert "story story-2 contains visible truncation" in issues
+    assert "story story-3 contains visible truncation" in issues
+
+
+def test_section_sanitizer_rebuilds_summary_from_visible_story_ids():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    stories = valid_quality_brief()["stories"]
+    sections = [
+        {
+            "topic": "TECHNOLOGY",
+            "title": "Technology",
+            "summary": "Florida sues OpenAI and Sam Altman over alleged safety lapses • The CGI would have cost millions.",
+            "why_it_matters": "Enough current signal to merit a dedicated scan.",
+            "story_ids": ["story-4"],
+        }
+    ]
+
+    sanitized = pipeline._sanitize_sections(sections, stories)
+
+    assert sanitized[0]["story_ids"] == ["story-4"]
+    assert sanitized[0]["summary"] == "Fourth current story"
+    assert "Florida sues OpenAI" not in sanitized[0]["summary"]
 
 
 def test_feed_cleanup_removes_google_news_cluster_artifacts():

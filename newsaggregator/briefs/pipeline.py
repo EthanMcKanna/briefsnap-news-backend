@@ -2373,10 +2373,58 @@ Sports score packet:
             cleaned = dict(section)
             cleaned["topic"] = topic
             cleaned["story_ids"] = story_ids
+            cleaned["summary"] = self._section_summary_from_story_ids(
+                topic=topic,
+                story_ids=story_ids,
+                stories=stories,
+            ) or _trim_words(section.get("summary"), 24)
+            if self._is_unpolished_copy(cleaned.get("summary")):
+                cleaned["summary"] = self._topic_name(topic)
+            cleaned["why_it_matters"] = (
+                _trim_words(section.get("why_it_matters"), 18)
+                or "Current stories in this lane are worth a quick scan."
+            )
             cleaned_sections.append(cleaned)
             seen_topics.add(topic)
 
         return cleaned_sections
+
+    @staticmethod
+    def _section_summary_from_story_ids(
+        *,
+        topic: str,
+        story_ids: list[str],
+        stories: list[dict[str, Any]],
+    ) -> str:
+        story_by_id = {
+            str(story.get("id")): story
+            for story in stories
+            if story.get("id")
+        }
+        summaries: list[str] = []
+        total_words = 0
+        for story_id in story_ids[:3]:
+            story = story_by_id.get(str(story_id))
+            if not story:
+                continue
+            title = _clean_text(story.get("title"))
+            if not title or DailyBriefPipeline._is_unpolished_copy(title):
+                continue
+            title_words = _word_count(title)
+            if summaries and total_words + title_words > 24:
+                continue
+            if title_words > 24:
+                title = _trim_words_plain(title, 24)
+                if DailyBriefPipeline._is_unpolished_copy(title):
+                    continue
+                title_words = _word_count(title)
+            summaries.append(title)
+            total_words += title_words
+            if total_words >= 18:
+                break
+        if summaries:
+            return " • ".join(summaries)
+        return DailyBriefPipeline._topic_name(topic)
 
     @staticmethod
     def _story_image_url(image_url: str | None) -> str | None:
@@ -2626,7 +2674,20 @@ Sports score packet:
 
     @staticmethod
     def _has_visible_truncation(text: Any) -> bool:
-        return bool(re.search(r"\.{3,}|…", str(text or "")))
+        cleaned = _clean_text(text)
+        if not cleaned:
+            return False
+        if re.search(r"\.{3,}|…", cleaned):
+            return True
+        normalized_quotes = cleaned.replace("“", '"').replace("”", '"')
+        if normalized_quotes.count('"') % 2 == 1:
+            return True
+        lowered = cleaned.lower().rstrip(" .!?")
+        if re.search(r"\bseeing (?:their|its|his|her|our) supplies$", lowered):
+            return True
+        if re.search(r"\bif you(?:'re| are)? \d+$", lowered):
+            return True
+        return False
 
     @staticmethod
     def _is_unpolished_copy(text: Any) -> bool:
