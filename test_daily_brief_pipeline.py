@@ -887,6 +887,70 @@ def test_normalize_brief_repairs_clipped_visible_copy():
     assert "visible truncation" not in " ".join(pipeline._brief_quality_issues(brief))
 
 
+def test_repair_backfill_skips_clipped_source_packet_story():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    existing_articles = article_candidates_for_normalization()
+    clipped_article = ArticleCandidate(
+        id="clipped-health",
+        topic="HEALTH",
+        title='Public health teams prepare "new surveillance plans',
+        source="STAT",
+        url="https://www.statnews.com/2026/06/03/world-cup-public-health",
+        description=(
+            "Public health teams are preparing World Cup disease surveillance plans."
+        ),
+        score=45,
+    )
+    refill_articles = [
+        ArticleCandidate(
+            id=f"refill-{index}",
+            topic=topic,
+            title=f"{topic.title()} refill story {index} carries current public impact",
+            source=source,
+            url=f"https://example.com/{topic.lower()}/refill-{index}",
+            description=f"{topic} refill story {index} has enough source-backed detail for readers.",
+            score=30 - index,
+        )
+        for index, (topic, source) in enumerate(
+            [
+                ("TOP_NEWS", "AP News"),
+                ("BUSINESS", "CNBC"),
+                ("TECHNOLOGY", "The Verge"),
+                ("WORLD", "BBC"),
+                ("SCIENCE", "NASA"),
+                ("SPORTS", "ESPN"),
+                ("ENTERTAINMENT", "Variety"),
+            ],
+            start=1,
+        )
+    ]
+    brief = {
+        "headline": "Court ruling reshapes federal immigration enforcement",
+        "dek": "Court ruling reshapes federal immigration enforcement leads today's brief.",
+        "summary": "A concise current summary gives readers useful context for today's main stories.",
+        "quick_hits": ["Court ruling reshapes federal immigration enforcement"],
+        "stories": [
+            pipeline._normalized_story_from_article(article)
+            for article in existing_articles
+        ],
+        "sections": [],
+        "custom_widgets": [],
+    }
+
+    repaired = pipeline._repair_brief_for_publish(
+        brief,
+        [*existing_articles, clipped_article, *refill_articles],
+    )
+
+    story_ids = {story["id"] for story in repaired["stories"]}
+    assert "clipped-health" not in story_ids
+    assert len(repaired["stories"]) >= 12
+    assert not any(
+        DailyBriefPipeline._story_has_publish_copy_issue(story)
+        for story in repaired["stories"]
+    )
+
+
 def test_story_normalization_drops_scraped_source_boilerplate():
     pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
     article = ArticleCandidate(

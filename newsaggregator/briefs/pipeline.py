@@ -1561,11 +1561,7 @@ Sports score packet:
                 continue
             if self._is_unpolished_copy(repaired.get("why_it_matters")):
                 repaired["why_it_matters"] = self._default_why_for_topic(topic)
-            if any(
-                self._has_visible_truncation(repaired.get(key))
-                or self._is_unpolished_copy(repaired.get(key))
-                for key in ("title", "summary", "why_it_matters")
-            ):
+            if self._story_has_publish_copy_issue(repaired):
                 continue
             repaired_stories.append(repaired)
 
@@ -2373,6 +2369,14 @@ Sports score packet:
         return ArticleFetcher._is_valid_image_url(str(story.get("image_url") or ""))
 
     @classmethod
+    def _story_has_publish_copy_issue(cls, story: dict[str, Any]) -> bool:
+        return any(
+            cls._has_visible_truncation(story.get(key))
+            or cls._is_unpolished_copy(story.get(key))
+            for key in ("title", "summary", "why_it_matters")
+        )
+
+    @classmethod
     def _story_passes_editorial_gate(cls, story: dict[str, Any]) -> bool:
         topic = cls._normalize_topic(story.get("topic"))
         title = str(story.get("title") or "")
@@ -2383,6 +2387,8 @@ Sports score packet:
             for key in ("summary", "why_it_matters")
         )
         if cls._is_bad_story_summary(story.get("summary"), title=title, source=source, url=url):
+            return False
+        if cls._story_has_publish_copy_issue(story):
             return False
         if topic == "SPORTS":
             return cls._is_high_signal_sports_candidate(
