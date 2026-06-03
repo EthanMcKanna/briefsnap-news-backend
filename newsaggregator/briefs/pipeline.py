@@ -1561,6 +1561,12 @@ Sports score packet:
                 continue
             if self._is_unpolished_copy(repaired.get("why_it_matters")):
                 repaired["why_it_matters"] = self._default_why_for_topic(topic)
+            if any(
+                self._has_visible_truncation(repaired.get(key))
+                or self._is_unpolished_copy(repaired.get(key))
+                for key in ("title", "summary", "why_it_matters")
+            ):
+                continue
             repaired_stories.append(repaired)
 
         repaired_story_ids = {str(story.get("id")) for story in repaired_stories if story.get("id")}
