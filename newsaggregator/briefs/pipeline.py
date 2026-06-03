@@ -2810,7 +2810,7 @@ Sports score packet:
         words = _clean_text(title).split()
         for max_words in (6, 5, 4, 3):
             compact = " ".join(words[:max_words]).strip(" ,;:-")
-            compact = _strip_dangling_copy_ending(compact)
+            compact = _strip_dangling_copy_ending(compact).rstrip(" .!?")
             if compact and not cls._is_unpolished_copy(compact):
                 return compact
         return ""

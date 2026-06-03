@@ -1373,6 +1373,28 @@ def test_grounded_top_level_copy_refreshes_old_fallback_dek():
     assert "Second current story" in dek
 
 
+def test_top_level_dek_does_not_comma_join_sentence_punctuation():
+    stories = [
+        {
+            "title": "The world is connected by copper. It's a huge target for thieves",
+            "summary": "Copper wire theft is disrupting telecom and utility networks.",
+        },
+        {
+            "title": "Iran fires missiles at Kuwait and Bahrain, U.S. strikes Iran facility",
+            "summary": "US forces struck an Iranian facility after missiles hit Gulf targets.",
+        },
+        {
+            "title": "Short seller Andrew Left convicted of securities fraud in California",
+            "summary": "A jury convicted Andrew Left after prosecutors described misleading trades.",
+        },
+    ]
+
+    dek, _, _ = DailyBriefPipeline._top_level_copy_from_stories(stories)
+
+    assert ".," not in dek
+    assert dek.startswith("The world is connected by copper, Iran fires")
+
+
 def test_title_compaction_keeps_complete_short_action_phrases():
     assert (
         DailyBriefPipeline._compact_title_reference(
