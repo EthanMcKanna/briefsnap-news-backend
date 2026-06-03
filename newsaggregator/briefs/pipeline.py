@@ -1480,6 +1480,9 @@ Sports score packet:
             why_copy = ""
         if not why_copy:
             why_copy = why_it_matters or self._default_why_it_matters(article)
+        why_text = _trim_words(why_copy, 18)
+        if self._is_unpolished_copy(why_text):
+            why_text = _trim_words(self._default_why_it_matters(article), 18)
 
         return {
             "id": article.id,
@@ -1488,7 +1491,7 @@ Sports score packet:
             "source": source,
             "url": article.url,
             "summary": summary_text,
-            "why_it_matters": _trim_words(why_copy, 18),
+            "why_it_matters": why_text,
             "urgency": _clean_text(story.get("urgency") or "medium").lower() or "medium",
             "published_at": article.published_at,
             "image_url": self._story_image_url(article.image_url),
@@ -2743,6 +2746,8 @@ Sports score packet:
         normalized_quotes = cleaned.replace("“", '"').replace("”", '"')
         if normalized_quotes.count('"') % 2 == 1:
             return True
+        if cleaned.count("‘") != cleaned.count("’"):
+            return True
         if _has_terminal_sentence_fragment(cleaned):
             return True
         lowered = cleaned.lower().rstrip(" .!?")
@@ -2751,6 +2756,12 @@ Sports score packet:
         if re.search(r"\bif you(?:'re| are)? \d+$", lowered):
             return True
         if re.search(r"\b(?:including|such as)\s+[a-z0-9'-]+$", lowered):
+            return True
+        if re.search(r"\band that the u\.s$", lowered):
+            return True
+        if re.search(r"\bhas convicted$", lowered):
+            return True
+        if re.search(r"\bin (?:their|his|her|its|our|the) quest$", lowered):
             return True
         return False
 
@@ -3710,6 +3721,7 @@ Sports score packet:
                 title = _trim_words(widget.get("title"), 5)
                 summary = _trim_words(widget.get("summary"), 24)
                 items = _trim_items(widget.get("items", []), max_items=5, max_words=12)
+                items = [item for item in items if not self._is_unpolished_copy(item)]
                 if self._is_unpolished_copy(summary):
                     summary = self._widget_summary_fallback(topic, stories, items)
                 if not topic or (not summary and not items):
@@ -3748,7 +3760,11 @@ Sports score packet:
                     "topic": topic,
                     "title": self._topic_name(topic),
                     "summary": summary,
-                    "items": _trim_items(items, max_items=5, max_words=12),
+                    "items": [
+                        item
+                        for item in _trim_items(items, max_items=5, max_words=12)
+                        if not self._is_unpolished_copy(item)
+                    ],
                 }
             )
             seen_topics.add(topic)

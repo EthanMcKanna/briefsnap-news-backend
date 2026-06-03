@@ -1007,6 +1007,14 @@ def test_story_normalization_rejects_dangling_and_unrelated_model_copy():
     assert DailyBriefPipeline._is_unpolished_copy(
         "is opening access to its Fly Foundational Robots mission"
     )
+    assert DailyBriefPipeline._is_unpolished_copy(
+        "The U.S. military said that Iran fired missiles at Kuwait and Bahrain that failed or were shot down, and that the U.S."
+    )
+    assert DailyBriefPipeline._is_unpolished_copy("A federal jury in California has convicted")
+    assert DailyBriefPipeline._is_unpolished_copy(
+        "A strong start in the Stanley Cup Final gives the Golden Knights momentum in their quest"
+    )
+    assert DailyBriefPipeline._is_unpolished_copy("‘The CGI would have cost millions.")
 
 
 def test_story_normalization_strips_terminal_fragment_sentence():
