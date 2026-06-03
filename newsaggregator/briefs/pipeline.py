@@ -2775,8 +2775,10 @@ Sports score packet:
             return True
         if DailyBriefPipeline._has_visible_truncation(cleaned):
             return True
-        if re.match(
-            r"^(?:['’]s|is|are|was|were|has|have|had|will|would|could|can|"
+        if re.match(r"^['’]s\b", lowered):
+            return True
+        if cleaned[:1].islower() and re.match(
+            r"^(?:is|are|was|were|has|have|had|will|would|could|can|"
             r"should|may|might|must|being|been)\b",
             lowered,
         ):

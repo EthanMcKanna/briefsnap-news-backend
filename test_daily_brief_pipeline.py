@@ -1007,6 +1007,9 @@ def test_story_normalization_rejects_dangling_and_unrelated_model_copy():
     assert DailyBriefPipeline._is_unpolished_copy(
         "is opening access to its Fly Foundational Robots mission"
     )
+    assert not DailyBriefPipeline._is_unpolished_copy(
+        "Is bovine colostrum really 'liquid gold' for gut health?"
+    )
     assert DailyBriefPipeline._is_unpolished_copy(
         "The U.S. military said that Iran fired missiles at Kuwait and Bahrain that failed or were shot down, and that the U.S."
     )
