@@ -1354,6 +1354,37 @@ def test_normalize_widgets_strips_dangling_to_be_item_endings():
     assert not top_news_widget["items"][0].endswith("to be")
 
 
+def test_normalize_widgets_avoids_stanley_cup_summary_fragment():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    title = "Golden Knights rally again, swipe Game 1 from Hurricanes"
+    stories = [
+        {
+            "id": "golden-knights",
+            "topic": "SPORTS",
+            "title": title,
+            "summary": (
+                "The Vegas Golden Knights rallied from an early deficit to secure a 5-4 "
+                "victory over the Carolina Hurricanes in Game 1 of the Stanley Cup Final."
+            ),
+        }
+    ]
+    articles = [
+        ArticleCandidate(
+            id="golden-knights",
+            topic="SPORTS",
+            title=title,
+            source="ESPN",
+            url="https://www.espn.com/nhl/story/_/id/golden-knights-game-1",
+            description=stories[0]["summary"],
+        )
+    ]
+
+    widgets = pipeline._normalize_widgets([], stories, articles)
+    sports_widget = next(widget for widget in widgets if widget["topic"] == "SPORTS")
+
+    assert not sports_widget["summary"].endswith("Stanley")
+
+
 def test_grounded_top_level_copy_refreshes_old_fallback_dek():
     payload = {
         "headline": "Court ruling reshapes federal immigration enforcement",
@@ -1401,6 +1432,12 @@ def test_title_compaction_keeps_complete_short_action_phrases():
             "US and Iran launch new strikes, as Kuwait says airport hit by Iranian drones"
         )
         == "US and Iran launch new strikes"
+    )
+    assert (
+        DailyBriefPipeline._compact_title_reference(
+            "DOJ is investigating former congressman George Santos for insider trading on Kalshi"
+        )
+        == "DOJ is investigating former congressman George Santos"
     )
     assert DailyBriefPipeline._is_unpolished_copy(
         "The bill was designed to regulate an industry struggling"

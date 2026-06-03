@@ -2813,8 +2813,13 @@ Sports score packet:
 
     @classmethod
     def _compact_title_reference(cls, title: Any) -> str:
-        words = _clean_text(title).split()
-        for max_words in (6, 5, 4, 3):
+        cleaned = _clean_text(title)
+        first_sentence = re.split(r"(?<=[.!?])\s+", cleaned)[0].strip(" .!?")
+        if 3 <= _word_count(first_sentence) <= 7 and not cls._is_unpolished_copy(first_sentence):
+            return first_sentence
+
+        words = cleaned.split()
+        for max_words in (7, 6, 5, 4, 3):
             compact = " ".join(words[:max_words]).strip(" ,;:-")
             compact = _strip_dangling_copy_ending(compact).rstrip(" .!?")
             if compact and not cls._is_unpolished_copy(compact):
@@ -2987,6 +2992,8 @@ Sports score packet:
         if re.search(r"\bif you(?:'re| are)? \d+$", lowered):
             return True
         if re.search(r"\b(?:including|such as)\s+[a-z0-9'-]+$", lowered):
+            return True
+        if re.search(r"\bthe stanley$", lowered):
             return True
         if re.search(r"\band that the u\.s$", lowered):
             return True
