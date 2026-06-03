@@ -1236,6 +1236,10 @@ def test_quality_gate_rejects_clipped_visible_copy():
         "Democratic state Rep. Josh Turek will face Republican U.S. Rep. "
         "Ashley Hinson in the Senate race. For governor"
     )
+    brief["stories"][4]["summary"] = (
+        "A federal jury convicted short seller Andrew Left of securities fraud. "
+        "Left, known for betting against stocks"
+    )
 
     issues = pipeline._brief_quality_issues(brief)
 
@@ -1246,6 +1250,7 @@ def test_quality_gate_rejects_clipped_visible_copy():
     assert "story story-2 contains visible truncation" in issues
     assert "story story-3 contains visible truncation" in issues
     assert "story story-4 contains visible truncation" in issues
+    assert "story story-5 contains visible truncation" in issues
     assert "TOP_NEWS section contains visible truncation" in issues
     assert "TOP_NEWS widget contains visible truncation" in issues
     assert "HEALTH widget contains visible truncation" in issues

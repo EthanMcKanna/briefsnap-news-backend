@@ -634,6 +634,8 @@ def _is_short_sentence_fragment(text: str) -> bool:
     fragment = _clean_text(text).strip(" .!?")
     if re.fullmatch(r"(?:[A-Z]\.?){2,}", fragment):
         return True
+    if re.match(r"^[A-Z][\w'-]+,\s+known for\b", fragment):
+        return True
     words = re.findall(r"\b[\w'-]+\b", fragment)
     if not words:
         return False
