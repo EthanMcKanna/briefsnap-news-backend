@@ -53,6 +53,9 @@ SPORTS_NEWS_HARD_LOW_SIGNAL_PATTERNS = (
     "mock draft",
     "top 25",
     "top 100",
+    "bracket, schedule, scores, news",
+    "takeaways, grades, questions",
+    "grades, questions",
 )
 SPORTS_NEWS_EXCLUDED_PATTERNS = (
     "betting",

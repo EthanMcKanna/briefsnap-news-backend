@@ -142,6 +142,18 @@ def test_select_high_signal_news_articles_filters_stale_low_signal_items():
             "published": (now - timedelta(hours=2)).isoformat(),
         },
         {
+            "headline": "Stanley Cup playoffs 2026: Bracket, schedule, scores, news",
+            "description": "A utility hub rather than a discrete high-signal story.",
+            "link": "https://espn.com/nhl/story/_/id/444/bracket-schedule-scores-news",
+            "published": (now - timedelta(minutes=30)).isoformat(),
+        },
+        {
+            "headline": "Golden Knights-Hurricanes Game 1 takeaways, grades, questions",
+            "description": "A roundup format that should not displace confirmed news.",
+            "link": "https://espn.com/nhl/story/_/id/555/game-1-takeaways",
+            "published": (now - timedelta(minutes=20)).isoformat(),
+        },
+        {
             "headline": "Veteran coach fired after playoff exit",
             "description": "The franchise confirmed the coaching change today.",
             "link": "https://espn.com/nba/coach-fired",
