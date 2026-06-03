@@ -4,6 +4,8 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
+import pytest
+
 from newsaggregator.briefs.pipeline import ArticleCandidate, DailyBriefPipeline, PipelineOptions, TOPICS
 from newsaggregator.fetchers.article_fetcher import ArticleFetcher
 from verify_daily_brief_release import audit_daily_brief
@@ -1183,6 +1185,15 @@ def test_quality_gate_rejects_clipped_visible_copy():
     assert "TOP_NEWS section contains visible truncation" in issues
     assert "TOP_NEWS widget contains visible truncation" in issues
     assert "HEALTH widget contains visible truncation" in issues
+
+
+def test_generated_candidate_quality_failure_raises_for_retry():
+    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
+    brief = valid_quality_brief()
+    brief["stories"][0]["summary"] = "A generated story starts with useful detail before trailing off..."
+
+    with pytest.raises(ValueError, match="generated candidate quality gate failed"):
+        pipeline._raise_for_generated_candidate_quality(brief)
 
 
 def test_section_sanitizer_rebuilds_summary_from_visible_story_ids():

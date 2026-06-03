@@ -1201,7 +1201,11 @@ class DailyBriefPipeline:
                             config=grounded_config,
                         )
                         payload = self._parse_json_response(response.text)
-                        return self._normalize_brief(payload, articles, f"{model}-search-grounded")
+                        return self._quality_checked_generated_brief(
+                            payload,
+                            articles,
+                            f"{model}-search-grounded",
+                        )
                     except Exception as exc:
                         print(f"[WARN] Gemini search-grounded model {model} via {client_label} failed: {exc}")
                         last_error = exc
@@ -1232,7 +1236,11 @@ class DailyBriefPipeline:
                             config=grounded_text_config,
                         )
                         payload = self._parse_json_response(response.text)
-                        return self._normalize_brief(payload, articles, f"{model}-search-grounded-text")
+                        return self._quality_checked_generated_brief(
+                            payload,
+                            articles,
+                            f"{model}-search-grounded-text",
+                        )
                     except Exception as exc:
                         print(f"[WARN] Gemini search-grounded text model {model} via {client_label} failed: {exc}")
                         last_error = exc
@@ -1260,7 +1268,11 @@ class DailyBriefPipeline:
                             config=source_config,
                         )
                         payload = self._parse_json_response(response.text)
-                        return self._normalize_brief(payload, articles, f"{model}-source-packet")
+                        return self._quality_checked_generated_brief(
+                            payload,
+                            articles,
+                            f"{model}-source-packet",
+                        )
                     except Exception as exc:
                         print(f"[WARN] Gemini source-packet model {model} via {client_label} failed: {exc}")
                         last_error = exc
@@ -1270,6 +1282,21 @@ class DailyBriefPipeline:
             raise RuntimeError(message)
         print(f"[WARN] {message}")
         return self._fallback_brief(articles, model_used="source-ranked-fallback")
+
+    def _quality_checked_generated_brief(
+        self,
+        payload: dict[str, Any],
+        articles: list[ArticleCandidate],
+        model_used: str,
+    ) -> dict[str, Any]:
+        brief = self._normalize_brief(payload, articles, model_used)
+        self._raise_for_generated_candidate_quality(brief)
+        return brief
+
+    def _raise_for_generated_candidate_quality(self, brief: dict[str, Any]) -> None:
+        quality_issues = self._brief_quality_issues(brief)
+        if quality_issues:
+            raise ValueError("generated candidate quality gate failed: " + "; ".join(quality_issues))
 
     def _brief_prompt(self, articles: list[ArticleCandidate], max_excerpt_chars: int = 900) -> str:
         records = [article.prompt_record(max_chars=max_excerpt_chars) for article in articles]
