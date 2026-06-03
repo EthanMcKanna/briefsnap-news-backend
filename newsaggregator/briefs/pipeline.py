@@ -1359,8 +1359,8 @@ Sports score packet:
         why_it_matters: str | None = None,
     ) -> dict[str, Any]:
         story = story or {}
-        source = _clean_text(story.get("source") or article.source)
-        title = self._clean_title(story.get("title") or article.title, source=source)
+        source = _clean_text(article.source or story.get("source"))
+        title = self._clean_title(article.title or story.get("title"), source=source)
         summary = self._clean_description(story.get("summary") or "", title=title, source=source)
         summary = _collapse_visible_truncation(summary)
         if self._is_bad_story_summary(summary, title=title, source=source, url=article.url):

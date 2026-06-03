@@ -926,7 +926,7 @@ def test_story_normalization_replaces_junk_model_summary_and_keeps_source_topic(
         article,
         story={
             "topic": "WORLD",
-            "title": "OpenAI chief outlines infrastructure plans in new interview",
+            "title": "OpenAI CEO Gives CNBC Transcript",
             "source": "CNBC",
             "summary": "com",
             "why_it_matters": "It affects AI infrastructure and platform planning.",
@@ -934,6 +934,7 @@ def test_story_normalization_replaces_junk_model_summary_and_keeps_source_topic(
     )
 
     assert story["topic"] == "TECHNOLOGY"
+    assert story["title"] == "OpenAI chief outlines infrastructure plans in new interview"
     assert story["summary"].startswith("OpenAI's chief executive discussed infrastructure")
     assert story["summary"] != "com"
 
