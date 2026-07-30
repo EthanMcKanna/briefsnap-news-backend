@@ -8,6 +8,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 # Add the project root to the Python path
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
@@ -22,8 +24,20 @@ except ImportError:
 from newsaggregator.utils.r2_storage import r2_storage
 from newsaggregator.config.settings import IMAGE_OPTIMIZATION
 
+RUN_IMAGE_SMOKE_TESTS_ENV = "BRIEFSNAP_RUN_IMAGE_SMOKE_TESTS"
+
+
+def _skip_unless_image_smoke_enabled():
+    if os.environ.get(RUN_IMAGE_SMOKE_TESTS_ENV) != "1":
+        pytest.skip(
+            f"set {RUN_IMAGE_SMOKE_TESTS_ENV}=1 to run external image optimization checks"
+        )
+
+
 def test_image_optimization():
     """Test image optimization with various sample images."""
+    _skip_unless_image_smoke_enabled()
+
     print("🖼️ Image Optimization Test")
     print("=" * 30)
     
@@ -132,6 +146,8 @@ def test_image_optimization():
 
 def test_optimization_settings():
     """Test different optimization settings."""
+    _skip_unless_image_smoke_enabled()
+
     print("\n🔧 Testing Optimization Settings")
     print("=" * 35)
     
@@ -216,4 +232,4 @@ def main():
 
 if __name__ == "__main__":
     success = main()
-    sys.exit(0 if success else 1) 
+    sys.exit(0 if success else 1)

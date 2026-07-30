@@ -8,6 +8,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 # Add the project root to the Python path
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
@@ -21,8 +23,20 @@ except ImportError:
 
 from newsaggregator.utils.r2_storage import r2_storage
 
+RUN_R2_TESTS_ENV = "BRIEFSNAP_RUN_R2_TESTS"
+
+
+def _skip_unless_r2_smoke_enabled():
+    if os.environ.get(RUN_R2_TESTS_ENV) != "1":
+        pytest.skip(f"set {RUN_R2_TESTS_ENV}=1 to run live R2 integration checks")
+    if not r2_storage.enabled:
+        pytest.skip("R2 storage environment variables are not configured")
+
+
 def test_r2_connection():
     """Test R2 connection."""
+    _skip_unless_r2_smoke_enabled()
+
     print("Testing R2 connection...")
     if r2_storage.check_r2_connection():
         print("✅ R2 connection successful!")
@@ -33,6 +47,8 @@ def test_r2_connection():
 
 def test_bucket_configuration():
     """Test bucket configuration for optimal Cloudflare caching."""
+    _skip_unless_r2_smoke_enabled()
+
     print("\nTesting bucket configuration...")
     
     try:
@@ -67,10 +83,11 @@ def test_cache_headers():
         print(f"    Metadata: {len(headers['Metadata'])} fields")
     
     print("✅ Cache header optimization working correctly!")
-    return True
 
 def test_image_upload():
     """Test uploading a sample image to R2 with enhanced caching."""
+    _skip_unless_r2_smoke_enabled()
+
     print("\nTesting image upload with optimized caching...")
     
     # Use a sample image URL (NASA image of the day - should be reliable)
@@ -164,4 +181,4 @@ def main():
 
 if __name__ == "__main__":
     success = main()
-    sys.exit(0 if success else 1) 
+    sys.exit(0 if success else 1)

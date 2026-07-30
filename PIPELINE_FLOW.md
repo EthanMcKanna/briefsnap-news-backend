@@ -1,520 +1,71 @@
-# News Aggregation Pipeline Flow
+# BriefSnap Daily Brief Pipeline (V9)
 
-This document provides a comprehensive overview of the news aggregation pipeline, from initial article discovery through final AI-powered summary generation.
+The daily brief pipeline lives in `newsaggregator/briefs/` and runs three
+times a day from GitHub Actions (`.github/workflows/news-aggregator.yml`,
+13:00 / 18:00 / 23:00 UTC). Entry point: `python main.py`.
 
-## Pipeline Overview
+## Design principle
 
-The pipeline consists of five main stages:
+**Deterministic curation, LLM writing.**
 
-1. **🔍 Article Discovery & Selection** - Find and rank high-quality articles
-2. **📄 Article Processing** - Extract content and validate quality
-3. **📚 Content Aggregation** - Combine articles by topic
-4. **🤖 AI Processing** - Generate summaries and detailed articles with Gemini
-5. **💾 Storage & Distribution** - Save and serve content
+The previous pipeline (V8) asked Gemini to both *select* and *write* the
+brief, then patched its output with ~1,650 lines of repair heuristics and
+a 183-check publish gate. V9 splits the responsibilities:
 
-```mermaid
-graph TD
-    A[Start Aggregation Process] --> B[Load Configuration & State]
-    B --> C{NewsAPI Enabled?}
-    
-    C -->|Yes| D[Check Quota & Cache]
-    C -->|No| E[Use RSS Only]
-    
-    D --> F[Get Quota-Optimized Topics]
-    E --> G[Get All RSS Topics]
-    
-    F --> H[NewsAPI Article Discovery]
-    G --> I[RSS Feed Fetching]
-    
-    H --> J[Merge & Deduplicate Articles]
-    I --> J
-    
-    J --> K[Quality Validation & Scoring]
-    K --> L[Article Content Extraction]
-    L --> M[Save Individual Articles]
-    M --> N[Create Combined Topic Files]
-    
-    N --> N1[Fetch Trending Headlines Context]
-    N1 --> O[Gemini Summary Generation with Headlines Context]
-    O --> P[Exa Content Enhancement]
-    P --> Q[Generate Brief Summaries]
-    Q --> R[Save Final Summaries]
-    R --> S[Upload to Firebase]
-    S --> T[Update Web Interface]
-    T --> U[End Process]
-```
+- What's in the brief is decided by auditable Python: feed gathering,
+  junk screening, cross-outlet clustering, and consensus ranking.
+- The model only writes prose over an already-curated packet, under a
+  strict JSON schema. A compact (~25 check) gate validates the copy; a
+  failure sends the specific issues back to the model for one corrective
+  rewrite before falling back to the next model.
 
-## Stage 1: Article Discovery & Selection
-
-### 1.1 Initialization & Configuration
-
-**File**: `newsaggregator/core/aggregator.py`
-
-```python
-# Initialize system components
-aggregator = NewsAggregator()
-- Load RSS fetcher
-- Initialize article processor  
-- Setup Gemini processor
-- Initialize enhanced article selector (with NewsAPI + caching)
-- Connect to Firebase
-```
-
-**Configuration Loading**: `newsaggregator/config/settings.py`
-- RSS feed URLs for each topic
-- NewsAPI.org settings and quota limits
-- Cache configuration
-- Quality thresholds
-- API keys and credentials
-
-### 1.2 Topic Selection & Quota Management
-
-**File**: `newsaggregator/selectors/article_selector.py`
-
-```python
-def get_quota_optimized_topics():
-    # Check NewsAPI quota status
-    # Prioritize topics based on remaining requests
-    # Return optimized topic list
-```
-
-**Quota Manager**: `newsaggregator/utils/quota_manager.py`
-- Tracks daily API request usage (80/100 limit)
-- Enforces hourly rate limits (10 req/hour)
-- Provides topic prioritization recommendations
-- Maintains persistent quota state
-
-### 1.3 Multi-Source Article Discovery
-
-**Primary Source - NewsAPI.org**: `newsaggregator/fetchers/newsapi_fetcher.py`
-
-```python
-def get_curated_articles_for_topic(topic):
-    # Check cache first
-    cached_articles = cache.get_cached_articles(topic)
-    if cached_articles:
-        return cached_articles
-    
-    # Check quota before API call
-    can_request = quota_manager.can_make_request()
-    if not can_request:
-        return []
-    
-    # Fetch from NewsAPI with intelligent endpoint selection
-    if topic has category:
-        articles = fetch_top_headlines(category, topic=topic)
-    else:
-        articles = fetch_everything(query, topic=topic)
-    
-    # Record request and cache results
-    quota_manager.record_request()
-    cache.cache_articles(articles)
-    
-    return scored_and_ranked_articles
-```
-
-**Fallback Source - RSS Feeds**: `newsaggregator/fetchers/rss_fetcher.py`
-
-```python
-def fetch_feed(feed_url):
-    # Parse RSS feed
-    # Extract article metadata (title, URL, date, source)
-    # Return normalized entries
-```
-
-**Smart Caching**: `newsaggregator/utils/article_cache.py`
-- 1-hour cache duration for API results
-- Daily cache key rotation
-- Automatic cleanup of expired files
-- Reduces API calls by 60-80%
-
-### 1.4 Article Ranking & Quality Assessment
-
-**Multi-Factor Scoring Algorithm**:
-- **Source Authority (40%)**: Reuters=100, BBC=90, CNN=85, etc.
-- **Recency (25%)**: Fresh articles (<6hrs) get full points
-- **Content Quality (30%)**: Title length, description, author presence
-- **Additional Factors (5%)**: Images, source type, clickbait detection
-
-**Quality Filtering**:
-- Remove suspicious domains (blogspot, wordpress, etc.)
-- Filter placeholder content
-- Validate URL schemes
-- Enforce minimum content requirements
-
-## Stage 2: Article Processing
-
-### 2.1 Content Extraction
-
-**File**: `newsaggregator/processors/article_processor.py`
-
-```python
-def process_article(entry, topic):
-    # Skip if already processed or recently failed
-    if url in processed_urls:
-        return None, False
-    
-    # Extract full article content
-    content, date = article_fetcher.scrape_article_content(url)
-    
-    if content:
-        # Save to file storage
-        FileStorage.save_article(title, content, source, url, date, topic)
-        
-        # Append to combined topic file
-        FileStorage.append_to_combined_file(article_data)
-        
-        # Mark as processed
-        processed_urls.add(url)
-        
-        return article_data, True
-```
-
-**Content Extraction**: `newsaggregator/fetchers/article_fetcher.py`
-- Handles Google News URL decoding
-- Uses newspaper3k for content extraction
-- Special handling for NYT archived articles
-- Validates content length and quality
-- Extracts publish dates and metadata
-
-### 2.2 Deduplication & State Management
-
-**Processed URL Tracking**:
-- Maintains set of processed URLs to avoid duplicates
-- Tracks failed URLs with retry intervals
-- Persistent state across runs
-
-**File Storage**: `newsaggregator/storage/file_storage.py`
-- Individual article files: `data/latest_news_articles/{topic}/{timestamp}_{title}.txt`
-- Combined topic files: `data/combined_articles/{topic}_combined.txt`
-- Metadata and state files in `data/`
-
-## Stage 3: Content Aggregation
-
-### 3.1 Topic-Based File Combination
-
-For each topic, all processed articles are combined into a single file:
+## Stages
 
 ```
-File: data/combined_articles/TECHNOLOGY_combined.txt
-
-=== Article 1 ===
-Title: [Article Title]
-Source: [Source Name]
-URL: [Article URL]
-Date: [Publication Date]
-
-[Full Article Content]
-
-=== Article 2 ===
-[Next Article...]
+gather -> screen -> cluster -> rank/select -> enrich -> write -> validate -> publish
 ```
 
-This combined file serves as input for the AI processing stage.
+| Stage | Module | What it does |
+|---|---|---|
+| Gather | `fetch.py` | ~47 sources in parallel: curated publisher RSS per topic, Google News topic/search feeds, ESPN league news. Feed failures are non-fatal. |
+| Screen | `screen.py` | Canonicalize URLs (strip tracking params), reject opinion/liveblog/press-release/gambling/explainer junk, classify topics from content signals, map publisher display names. |
+| Cluster | `cluster.py` | Union-find grouping of same-story coverage across outlets (stemmed token overlap, 48h window). Cluster breadth = consensus. |
+| Rank | `rank.py` | Score = cross-outlet consensus (log-scaled trusted domains) + source tier + recency decay + quality. Select ~20 with per-topic targets, domain caps, and near-duplicate suppression. Topics are never padded with weak clusters. |
+| Enrich | `enrich.py` | Scrape only the selected ~20 leads (via `ArticleFetcher`): body text for grounding + validated article image. Resolves Google News redirects. |
+| Sports | `sports.py` | ESPN scoreboard packet (max 6 cards, 2/league, live-first) — same card shape the iOS app has always consumed. |
+| Write | `writer.py` | One structured Gemini call (`gemini-3-flash-preview`, fallback `gemini-2.5-flash`) with the packet. No search grounding needed — the packet is the ground truth. Custom widgets use search grounding since user topics fall outside the packet. |
+| Validate | `validate.py` | ~25 checks: complete headline (no truncation), prose dek, resolvable story ids, section coverage, word budgets, banned filler. Issues feed back verbatim as a corrective prompt. |
+| Publish | `publish.py` | `daily_briefs/{YYYY-MM-DD}` + `daily_brief_history` + legacy `news_summaries` shim + custom widget refresh. |
 
-### 3.2 Cross-Topic Deduplication
+## Firestore contract (unchanged from V8)
 
-The system tracks articles across topics to avoid processing the same story multiple times, even if it appears in different topic feeds.
+`daily_briefs/{date}`: `id, generated_at, model_used, headline, dek,
+summary, quick_hits[], hero_image_url, sections[{topic, title, summary,
+why_it_matters, story_ids[]}], stories[{id, topic, title, source, url,
+summary, why_it_matters, urgency, published_at, image_url}],
+sports_scores[], source_count, coverage_report{}`.
 
-## Stage 4: AI Processing with Gemini
+Sports scores are refreshed independently of brief generation:
+`main_sports.py` (hourly) and `main_live_sports.py` (every 5 min) call
+`DailyBriefPipeline.refresh_latest_firestore_sports_scores()`, and a
+Firebase scheduled function does the same every 5 minutes.
 
-### 4.1 Headlines Context Collection
-
-Before generating summaries, the system optionally fetches current trending headlines to provide Gemini with broader context about what's happening in the news landscape.
-
-**File**: `newsaggregator/processors/gemini_processor.py`
-
-```python
-def get_trending_headlines_context(topic):
-    # Check quota availability (need 5+ requests remaining)
-    # Only fetch for priority topics (TOP_NEWS, TECHNOLOGY, BUSINESS)
-    # Get 15 recent headlines from NewsAPI
-    # Deduplicate similar headlines
-    # Format for Gemini context
-    
-    return formatted_headlines_string
-```
-
-**Smart Quota Management**:
-- Only fetches headlines for priority topics
-- Requires minimum quota threshold (5 requests)
-- Uses separate cache keys for headlines vs. articles
-- Falls back gracefully if quota is low
-
-**Headline Deduplication**:
-- Removes headlines with 3+ common words (likely duplicates)
-- Limits to 8 unique headlines per topic
-- Prioritizes diverse headline sources
-
-### 4.2 Summary Generation with Headlines Context
-
-**File**: `newsaggregator/processors/gemini_processor.py`
-
-```python
-def generate_summary(content, topic):
-    # Get trending headlines for additional context
-    headlines_context = get_trending_headlines_context(topic)
-    
-    # Read combined topic file
-    combined_content = read_combined_file(topic)
-    
-    # Generate comprehensive summary with Gemini
-    if headlines_context:
-        prompt = f"""
-        Analyze these {topic} articles and create a comprehensive summary:
-        - Main summary of key developments
-        - Individual story breakdowns with titles and descriptions
-        - Use the trending headlines below to prioritize important stories
-        - Focus on topics that align with what's currently trending
-        
-        {headlines_context}
-        
-        News Articles: {combined_content}
-        """
-    else:
-        prompt = f"""
-        Analyze these {topic} articles and create a comprehensive summary:
-        - Main summary of key developments
-        - Individual story breakdowns with titles and descriptions
-        
-        News Articles: {combined_content}
-        """
-    
-    response = gemini_model.generate_content(prompt)
-    return parsed_summary_with_stories
-```
-
-**Headlines Context Enhancement**:
-- Fetches current trending headlines from NewsAPI.org
-- Only for priority topics to conserve quota (TOP_NEWS, TECHNOLOGY, BUSINESS)
-- Deduplicates similar headlines to avoid noise
-- Provides Gemini with current news landscape context
-- Helps prioritize stories that align with breaking news and trends
-
-**Summary Structure**:
-```json
-{
-  "Summary": "Overall topic summary...",
-  "Stories": [
-    {
-      "StoryTitle": "Individual story title",
-      "StoryDescription": "Story details...", 
-      "id": "unique_story_id"
-    }
-  ]
-}
-```
-
-### 4.2 Content Enhancement with Exa
-
-**File**: `newsaggregator/processors/article_processor.py`
-
-```python
-def process_for_summary(summary_data):
-    for story in summary_data['Stories']:
-        # Check for duplicates
-        if not is_duplicate_article(story_title):
-            # Fetch detailed content using Exa search
-            detailed_article, citations, img_url = exa_fetcher.fetch_detailed_article(story_title)
-            
-            # Generate additional metadata
-            story['FullArticle'] = detailed_article
-            story['Citations'] = citations
-            story['summary'] = generate_story_summary(detailed_article)
-            story['keyPoints'] = extract_key_points(detailed_article)
-            
-            # Process images
-            if img_url:
-                r2_url = r2_storage.upload_image_from_url(img_url, story_title)
-                story['img_url'] = r2_url
-```
-
-**Exa Integration**: `newsaggregator/fetchers/exa_fetcher.py`
-- Searches for recent articles on specific story topics
-- Aggregates content from multiple sources
-- Provides citations and references
-- Finds relevant images for stories
-
-### 4.3 Brief Summary Generation
-
-```python
-def generate_brief_summary(full_summary, topic):
-    prompt = f"""
-    Create a brief, engaging summary of this {topic} news:
-    - 2-3 sentences maximum
-    - Focus on the most important developments
-    - Include 3-5 bullet points of key highlights
-    """
-    
-    return {
-        'BriefSummary': brief_text,
-        'BulletPoints': [key_points]
-    }
-```
-
-## Stage 5: Storage & Distribution
-
-### 5.1 File System Storage
-
-**Summary Files**: `data/news_summaries/{topic}/{timestamp}_summary.json`
-
-```json
-{
-  "topic": "TECHNOLOGY",
-  "timestamp": 1703123456,
-  "Summary": "Main summary text...",
-  "brief_summary": "Brief version...",
-  "bullet_points": ["Point 1", "Point 2"],
-  "Stories": [
-    {
-      "StoryTitle": "Story title",
-      "StoryDescription": "Description", 
-      "FullArticle": "Complete article text",
-      "Citations": ["source1", "source2"],
-      "img_url": "https://r2.url/image.jpg",
-      "summary": "Story summary",
-      "keyPoints": ["Key point 1", "Key point 2"],
-      "id": "unique_id"
-    }
-  ]
-}
-```
-
-### 5.2 Firebase/Firestore Integration
-
-**File**: `newsaggregator/storage/firebase_storage.py`
-
-```python
-def upload_to_firestore(summary, topic):
-    # Upload main summary document
-    doc_ref = db.collection('news_summaries').document()
-    doc_ref.set(summary_data)
-    
-    # Upload individual articles
-    for story in summary['Stories']:
-        article_ref = db.collection('articles').document()
-        article_ref.set(story_data)
-```
-
-**Firestore Collections**:
-- `news_summaries`: Topic-level summaries
-- `articles`: Individual story articles
-
-### 5.3 Image Storage
-
-**Cloudflare R2 Integration**: `newsaggregator/utils/r2_storage.py`
-- Downloads images from article URLs
-- Uploads to Cloudflare R2 storage
-- Returns CDN URLs for fast delivery
-- Handles image optimization and caching
-
-### 5.4 Web Interface
-
-**File**: `newsaggregator/web/app.py`
-
-Flask web application that:
-- Displays articles from Firestore
-- Provides topic filtering
-- Shows summaries and full articles
-- Handles image display from R2 CDN
-
-## Pipeline Execution Flow
-
-### Complete Run Example
+## Running locally
 
 ```bash
-# Start aggregation process
-python -m newsaggregator.core.aggregator
-
-# Flow execution:
-1. Load configuration and check NewsAPI quota (15 remaining requests)
-2. Get quota-optimized topics: ['TOP_NEWS', 'TECHNOLOGY', 'BUSINESS'] 
-3. Process TOP_NEWS:
-   - Check cache: miss
-   - Make NewsAPI request (14 remaining)
-   - Find 25 articles, score and rank
-   - Select top 20 articles
-   - Extract content from 18 successfully
-   - Save to files and update combined file
-4. Process TECHNOLOGY:
-   - Check cache: hit (from earlier run)
-   - Use cached articles (no API request)
-   - Process cached articles
-5. Process BUSINESS:
-   - Check cache: miss  
-   - Make NewsAPI request (13 remaining)
-   - Process articles
-6. Generate summaries:
-   - For TOP_NEWS: Fetch trending headlines for context (12 remaining)
-     - Get 8 unique trending headlines
-     - Include in Gemini prompt for better story prioritization
-   - For TECHNOLOGY: Use cached headlines from earlier run
-   - For BUSINESS: Fetch trending headlines for context (11 remaining)
-   - Send enhanced prompts to Gemini for summary generation
-   - Enhance stories with Exa content
-   - Generate brief summaries and key points
-   - Process and upload images to R2
-7. Save and distribute:
-   - Save summary files locally
-   - Upload to Firestore
-   - Update web interface
-8. Complete: Used 4 API requests, processed 54 articles, generated 3 summaries with headlines context
+python main.py --dry-run          # no Gemini, no Firestore; writes local artifact
+python main.py --skip-firestore   # real Gemini writing, no publish
+python main.py                    # full run + publish
+python verify_daily_brief_release.py --brief-json data/daily_briefs/daily_brief_<date>.json
+python -m pytest test_daily_brief_pipeline.py
 ```
 
-### Performance Optimizations
+Secrets: `GEMINI_API_KEY` (+ optional `GEMINI_API_KEY_2` failover) and
+`firebase-credentials.json` (or `FIREBASE_CREDENTIALS` inline JSON).
+Local runs load `.env` automatically.
 
-**Caching Strategy**:
-- NewsAPI results cached for 1 hour
-- Gemini responses cached to avoid regeneration
-- Image processing cached to R2
+## Tuning
 
-**Quota Management**:
-- Daily limit: 80 requests (20% safety buffer)
-- Hourly limit: 10 requests
-- Priority topic processing
-- Intelligent endpoint selection
-
-**Quality Control**:
-- Multi-stage article validation
-- Duplicate detection across topics
-- Source reliability scoring
-- Content quality thresholds
-
-## Monitoring & Maintenance
-
-### Real-time Monitoring
-
-```bash
-# Check quota status
-python monitor_quota.py
-
-# Output:
-📊 NewsAPI Quota Status
-Daily Limit:      80
-Requests Made:    12
-Remaining:        68
-Usage:            15.0%
-Status:           🟢 Good
-
-💾 Cache Statistics
-Cache Enabled:    Yes
-Total Files:      23
-Total Articles:   287
-Cache Hit Rate:   76%
-```
-
-### Error Handling & Recovery
-
-- **Quota Exhaustion**: Automatic fallback to RSS feeds
-- **API Failures**: Retry logic with exponential backoff
-- **Content Extraction Failures**: Skip and continue processing
-- **Storage Failures**: Multiple storage backends (file + cloud)
-
-### Maintenance Tasks
-
-- **Daily**: Monitor quota usage and cache performance
-- **Weekly**: Clean expired cache files and old summaries  
-- **Monthly**: Review source rankings and topic priorities
-- **As needed**: Update API keys and configuration
-
-This comprehensive pipeline ensures robust, high-quality news aggregation while staying within free tier API limits and maintaining excellent performance through intelligent caching and optimization strategies. 
+Everything tunable lives in `config.py` (feeds, trusted domains, topic
+targets, thresholds, copy budgets); most values have `BRIEFSNAP_*` env
+overrides.

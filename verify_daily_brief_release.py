@@ -1,25 +1,22 @@
 """Release gate for the latest BriefSnap daily brief in Firestore.
 
-This script checks the already-published app payload, then compares its sports
-score packet with a fresh ESPN selector pass. It is intended to be run before an
-iOS release or App Store upload.
+Audits the already-published app payload: structure, copy completeness,
+freshness, and sports score card sanity. Run in CI right after the pipeline
+publishes, and before an iOS release.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
+import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
-import firebase_admin
-from firebase_admin import credentials, firestore
-from google.cloud.firestore_v1.base_query import FieldFilter
-
-from newsaggregator.briefs.pipeline import DailyBriefPipeline, PipelineOptions
-from newsaggregator.fetchers.article_fetcher import ArticleFetcher
-from newsaggregator.storage.sports_storage import SportsStorage
+from newsaggregator.briefs import sports as sports_mod
+from newsaggregator.briefs.config import MIN_PUBLISHABLE_STORIES
+from newsaggregator.briefs.pipeline import TOPIC_PRIORITY
 
 
 def parse_datetime(value: Any) -> datetime | None:
@@ -32,36 +29,30 @@ def parse_datetime(value: Any) -> datetime | None:
             return None
     else:
         return None
-
     if date.tzinfo is None:
-        return date.replace(tzinfo=timezone.utc)
+        date = date.replace(tzinfo=timezone.utc)
     return date.astimezone(timezone.utc)
 
 
-def firebase_credential() -> credentials.Certificate:
-    inline = os.environ.get("FIREBASE_CREDENTIALS")
-    if inline:
-        return credentials.Certificate(json.loads(inline))
+def load_brief(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
+    if args.brief_json:
+        payload = json.loads(Path(args.brief_json).read_text())
+        return str(payload.get("id") or args.brief_json), payload
 
-    path = os.environ.get("FIREBASE_CREDENTIALS_PATH") or "firebase-credentials.json"
-    if not os.path.exists(path):
-        raise FileNotFoundError(
-            "Firebase credentials not found. Set FIREBASE_CREDENTIALS, "
-            "FIREBASE_CREDENTIALS_PATH, or run from the backend repo."
-        )
-    return credentials.Certificate(path)
+    import firebase_admin
+    from firebase_admin import firestore
 
+    from newsaggregator.briefs.publish import firebase_credentials
 
-def latest_daily_brief(doc_id: str | None = None) -> tuple[str, dict[str, Any]]:
     if not firebase_admin._apps:
-        firebase_admin.initialize_app(firebase_credential())
-
+        firebase_admin.initialize_app(firebase_credentials())
     db = firestore.client()
-    if doc_id:
-        snapshot = db.collection("daily_briefs").document(doc_id).get()
-        if not snapshot.exists:
-            raise RuntimeError(f"daily_briefs/{doc_id} does not exist")
-        return snapshot.id, snapshot.to_dict() or {}
+
+    if args.doc_id:
+        doc = db.collection("daily_briefs").document(args.doc_id).get()
+        if not doc.exists:
+            raise SystemExit(f"daily_briefs/{args.doc_id} does not exist")
+        return doc.id, doc.to_dict() or {}
 
     docs = list(
         db.collection("daily_briefs")
@@ -70,230 +61,116 @@ def latest_daily_brief(doc_id: str | None = None) -> tuple[str, dict[str, Any]]:
         .stream()
     )
     if not docs:
-        raise RuntimeError("No daily_briefs documents found")
+        raise SystemExit("No daily_briefs documents found")
     return docs[0].id, docs[0].to_dict() or {}
 
 
-def audit_daily_brief(
-    brief: dict[str, Any],
-    *,
-    now: datetime,
-    max_age: timedelta,
-    max_sports_age: timedelta,
-    max_final_score_age: timedelta,
-    check_current_espn: bool,
-    current_score_ids: list[str] | None = None,
-) -> tuple[list[str], dict[str, Any]]:
-    issues: list[str] = []
-    stories = [story for story in brief.get("stories", []) if isinstance(story, dict)]
-    scores = [score for score in brief.get("sports_scores", []) if isinstance(score, dict)]
-
-    pipeline = DailyBriefPipeline(PipelineOptions(dry_run=True, publish=False))
-    pipeline.sports_score_cards = scores
-    issues.extend(pipeline._brief_quality_issues(brief))
-
-    stored_quality_issues = brief.get("quality_issues")
-    if stored_quality_issues:
-        issues.append(f"published brief includes quality_issues: {stored_quality_issues}")
+def audit(doc_id: str, brief: dict[str, Any], max_age_hours: float) -> list[str]:
+    problems: list[str] = []
 
     generated_at = parse_datetime(brief.get("generated_at"))
-    if generated_at is None:
-        issues.append("generated_at is missing or invalid")
-    elif now - generated_at > max_age:
-        issues.append(f"brief is stale: generated {generated_at.isoformat()}")
-
-    if str(brief.get("model_used") or "").lower() in {"dry-run", "source-ranked-fallback"}:
-        issues.append(f"model_used is not a production generated run: {brief.get('model_used')}")
-
-    if len(stories) < 6:
-        issues.append(f"brief has too few visible stories: {len(stories)}")
-
-    valid_image_count = sum(
-        1
-        for story in stories
-        if ArticleFetcher._is_valid_image_url(str(story.get("image_url") or ""))
-    )
-    image_ratio = valid_image_count / len(stories) if stories else 0
-    if stories and image_ratio < 0.75:
-        issues.append(
-            f"story image coverage is too low: {valid_image_count}/{len(stories)} valid images"
-        )
-
-    sports_story_count = sum(
-        1
-        for story in stories
-        if DailyBriefPipeline._normalize_topic(story.get("topic")) == "SPORTS"
-    )
-    if scores and sports_story_count == 0:
-        issues.append("sports scores are present without a sports news story")
-
-    latest_verified_at = max(
-        (date for date in (parse_datetime(score.get("verified_at")) for score in scores) if date),
-        default=None,
-    )
-    if scores and latest_verified_at is None:
-        issues.append("sports scores missing parseable verification timestamps")
-    elif latest_verified_at and now - latest_verified_at > max_sports_age:
-        issues.append(
-            "sports scores are stale: latest verification "
-            f"{latest_verified_at.isoformat()}"
-        )
-
-    non_displayable_scores = [
-        str(score.get("id") or "<unknown>")
-        for score in scores
-        if not DailyBriefPipeline._score_card_is_displayable(score, now)
-    ]
-    if non_displayable_scores:
-        issues.append(
-            "sports scores include expired entries: " + ", ".join(non_displayable_scores)
-        )
-
-    current_score_ids = current_score_ids or []
-    if check_current_espn:
-        if not current_score_ids:
-            current_scores = pipeline._fetch_top_sports_scores()
-            current_score_ids = [str(score.get("id") or "") for score in current_scores if score.get("id")]
-        stored_score_ids = [str(score.get("id") or "") for score in scores if score.get("id")]
-        if current_score_ids and stored_score_ids != current_score_ids:
-            issues.append(
-                "sports scores do not match fresh ESPN selector: "
-                f"stored={stored_score_ids}, current={current_score_ids}"
+    if not generated_at:
+        problems.append("generated_at missing or unparseable")
+    else:
+        age = datetime.now(timezone.utc) - generated_at
+        if age > timedelta(hours=max_age_hours):
+            problems.append(
+                f"brief is {age.total_seconds() / 3600:.1f}h old (max {max_age_hours}h)"
             )
-        if current_score_ids and not scores:
-            issues.append("ESPN has displayable scores but the brief has none")
 
-    stale_final_score_ids = stale_active_final_score_ids(now=now, max_age=max_final_score_age)
-    if stale_final_score_ids:
-        issues.append(
-            "sports_games has active final scores older than "
-            f"{max_final_score_age}: {', '.join(stale_final_score_ids)}"
-        )
+    model_used = str(brief.get("model_used") or "")
+    if not model_used or model_used == "dry-run" or "fallback" in model_used:
+        problems.append(f"model_used is not a real generated run: {model_used!r}")
 
-    coverage = brief.get("coverage_report") if isinstance(brief.get("coverage_report"), dict) else {}
-    source_packet_topic_counts = coverage.get("topic_counts")
-    source_candidate_topic_counts = coverage.get("candidate_topic_counts")
-    summary = {
-        "story_count": len(stories),
-        "valid_image_count": valid_image_count,
-        "source_packet_count": coverage.get("source_packet_count", brief.get("source_count")),
-        "source_packet_domains": coverage.get("source_packet_domains"),
-        "source_packet_topic_counts": dict(sorted(source_packet_topic_counts.items()))
-        if isinstance(source_packet_topic_counts, dict)
-        else None,
-        "source_candidate_topic_counts": dict(sorted(source_candidate_topic_counts.items()))
-        if isinstance(source_candidate_topic_counts, dict)
-        else None,
-        "leading_trusted_story_count": coverage.get("leading_trusted_story_count"),
-        "max_leading_domain_count": coverage.get("max_leading_domain_count"),
-        "visible_story_topics": sorted(
-            (coverage.get("story_topic_counts") or {}).keys()
-        ) if isinstance(coverage.get("story_topic_counts"), dict) else None,
-        "sports_story_count": sports_story_count,
-        "sports_score_count": len(scores),
-        "latest_sports_verified_at": latest_verified_at.isoformat() if latest_verified_at else None,
-        "current_espn_score_ids": current_score_ids,
-        "stale_active_final_score_ids": stale_final_score_ids,
-    }
-    return issues, summary
+    for text_field in ("headline", "dek", "summary"):
+        if len(str(brief.get(text_field) or "").split()) < 4:
+            problems.append(f"{text_field} is missing or too thin")
 
+    quick_hits = brief.get("quick_hits") or []
+    if len(quick_hits) < 4:
+        problems.append(f"only {len(quick_hits)} quick_hits (need 4+)")
 
-def stale_active_final_score_ids(*, now: datetime, max_age: timedelta) -> list[str]:
-    cutoff_ts = (now - max_age).timestamp()
-    stale_ids: list[str] = []
-    db = firestore.client()
-    sport_codes = ("nfl", "ncaaf", "nba", "wnba", "ncaab", "mlb", "nhl", "mls")
+    stories = brief.get("stories") or []
+    if len(stories) < MIN_PUBLISHABLE_STORIES:
+        problems.append(f"only {len(stories)} stories (need {MIN_PUBLISHABLE_STORIES}+)")
+    story_ids = set()
+    for index, story in enumerate(stories):
+        story_ids.add(str(story.get("id") or ""))
+        for required in ("title", "url", "source", "summary"):
+            if not str(story.get(required) or "").strip():
+                problems.append(f"stories[{index}] missing {required}")
+        url = str(story.get("url") or "")
+        if url and not url.startswith("http"):
+            problems.append(f"stories[{index}] has non-http url {url!r}")
+        if "news.google.com" in url:
+            problems.append(f"stories[{index}] url is an unresolved Google News redirect")
 
-    for sport_code in sport_codes:
-        docs = (
-            db.collection("sports_games")
-            .where(filter=FieldFilter("sport_code", "==", sport_code))
-            .where(filter=FieldFilter("timestamp", "<", cutoff_ts))
-            .where(filter=FieldFilter("status", "==", "Final"))
-            .order_by("timestamp", direction=firestore.Query.DESCENDING)
-            .limit(20)
-            .stream()
-        )
-        for doc in docs:
-            stale_ids.append(doc.id)
+    sections = brief.get("sections") or []
+    if len(sections) < 4:
+        problems.append(f"only {len(sections)} sections (need 4+)")
+    known_topics = set(TOPIC_PRIORITY)
+    for index, section in enumerate(sections):
+        topic = str(section.get("topic") or "")
+        if topic not in known_topics:
+            problems.append(f"sections[{index}] has unknown topic {topic!r}")
+        section_story_ids = section.get("story_ids") or []
+        if not section_story_ids:
+            problems.append(f"sections[{index}] ({topic}) has no story_ids")
+        for sid in section_story_ids:
+            if str(sid) not in story_ids:
+                problems.append(f"sections[{index}] references missing story {sid!r}")
 
-    return stale_ids
+    if not brief.get("hero_image_url"):
+        problems.append("hero_image_url missing")
+    image_count = sum(1 for story in stories if story.get("image_url"))
+    if image_count < 3:
+        problems.append(f"only {image_count} story images (want 3+)")
 
+    scores = brief.get("sports_scores") or []
+    for index, score in enumerate(scores):
+        if not isinstance(score, dict):
+            problems.append(f"sports_scores[{index}] is not an object")
+            continue
+        if not score.get("display"):
+            problems.append(f"sports_scores[{index}] missing display")
+        if not sports_mod.score_card_is_displayable(score):
+            problems.append(
+                f"sports_scores[{index}] ({score.get('id')}) is stale or expired"
+            )
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Verify the published BriefSnap daily brief release payload")
-    parser.add_argument("--doc-id", help="Specific daily_briefs document id to check")
-    parser.add_argument("--max-age-hours", type=float, default=30)
-    parser.add_argument("--max-sports-age-minutes", type=float, default=20)
-    parser.add_argument("--max-final-score-age-hours", type=float, default=6)
-    parser.add_argument("--skip-current-espn", action="store_true")
-    parser.add_argument(
-        "--skip-sports-score-refresh",
-        action="store_true",
-        help="Do not refresh the latest brief's ESPN score cards before auditing",
-    )
-    parser.add_argument(
-        "--skip-stale-score-cleanup",
-        action="store_true",
-        help="Do not archive stale final sports_games rows before auditing",
-    )
-    return parser.parse_args()
+    return problems
 
 
 def main() -> int:
-    args = parse_args()
-    now = datetime.now(timezone.utc)
-    if not args.skip_stale_score_cleanup:
-        archived = SportsStorage.archive_stale_final_scores(
-            now=now,
-            max_age_hours=args.max_final_score_age_hours,
-        )
-        if archived:
-            print(f"Archived {archived} stale final sports score row(s) before audit")
-
-    current_score_ids: list[str] | None = None
-    if not args.skip_sports_score_refresh and not args.skip_current_espn and not args.doc_id:
-        refresh_stats = DailyBriefPipeline(
-            PipelineOptions(dry_run=True, publish=False)
-        ).refresh_latest_firestore_sports_scores()
-        if refresh_stats.get("success"):
-            current_score_ids = [
-                str(score_id)
-                for score_id in refresh_stats.get("score_ids", [])
-                if str(score_id)
-            ]
-            print(
-                "Refreshed daily brief sports scores before audit: "
-                f"daily_briefs/{refresh_stats.get('doc_id')} "
-                f"({refresh_stats.get('scores_count', 0)} game cards)"
-            )
-        else:
-            print(f"Sports score refresh skipped before audit: {refresh_stats.get('error')}")
-
-    doc_id, brief = latest_daily_brief(args.doc_id)
-    issues, summary = audit_daily_brief(
-        brief,
-        now=now,
-        max_age=timedelta(hours=args.max_age_hours),
-        max_sports_age=timedelta(minutes=args.max_sports_age_minutes),
-        max_final_score_age=timedelta(hours=args.max_final_score_age_hours),
-        check_current_espn=not args.skip_current_espn,
-        current_score_ids=current_score_ids,
+    parser = argparse.ArgumentParser(
+        description="Verify the published BriefSnap daily brief release payload"
     )
+    parser.add_argument("--doc-id", help="Specific daily_briefs document id to check")
+    parser.add_argument(
+        "--brief-json",
+        help="Audit a local daily brief JSON artifact instead of Firestore",
+    )
+    parser.add_argument("--max-age-hours", type=float, default=30)
+    args = parser.parse_args()
 
-    print(f"Checked daily_briefs/{doc_id} at {now.isoformat()}")
-    for key, value in summary.items():
-        print(f"{key}: {value}")
+    doc_id, brief = load_brief(args)
+    problems = audit(doc_id, brief, args.max_age_hours)
 
-    if issues:
-        print("\nRelease gate failed:")
-        for issue in issues:
-            print(f"- {issue}")
+    print(f"Audited daily brief {doc_id}")
+    if problems:
+        print(f"FAIL — {len(problems)} problem(s):")
+        for problem in problems:
+            print(f"  - {problem}")
         return 1
 
-    print("\nRelease gate passed.")
+    print(
+        f"OK — {len(brief.get('stories') or [])} stories, "
+        f"{len(brief.get('sections') or [])} sections, "
+        f"{len(brief.get('sports_scores') or [])} score cards, "
+        f"model {brief.get('model_used')}"
+    )
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())

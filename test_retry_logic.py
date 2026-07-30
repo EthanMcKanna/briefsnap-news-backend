@@ -8,14 +8,25 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from newsaggregator.fetchers.exa_fetcher import ExaFetcher
 from newsaggregator.utils.retry import api_manager
 
+RUN_API_SMOKE_TESTS_ENV = "BRIEFSNAP_RUN_API_SMOKE_TESTS"
+
+
 def test_retry_logic():
     """Test the retry logic with article summary and key points generation."""
+    if os.environ.get(RUN_API_SMOKE_TESTS_ENV) != "1":
+        pytest.skip(f"set {RUN_API_SMOKE_TESTS_ENV}=1 to run live Gemini/Exa checks")
+    missing_vars = [var for var in ("GEMINI_API_KEY", "EXA_API_KEY") if not os.getenv(var)]
+    if missing_vars:
+        pytest.skip(f"missing required environment variables: {', '.join(missing_vars)}")
+
     print("=" * 80)
     print("TESTING GEMINI API RETRY LOGIC")
     print("=" * 80)

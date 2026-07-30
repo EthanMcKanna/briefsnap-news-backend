@@ -1,12 +1,22 @@
 #!/usr/bin/env python3
 """Test script for game summary functionality."""
 
+import os
 from datetime import datetime, timezone, timedelta
+
+import pytest
+
 from newsaggregator.processors.game_summary_processor import GameSummaryProcessor
 from newsaggregator.storage.sports_storage import SportsStorage
 
+RUN_FIRESTORE_TESTS_ENV = "BRIEFSNAP_RUN_FIRESTORE_TESTS"
+
+
 def test_game_summary_processor():
     """Test the game summary processor functionality."""
+    if os.environ.get(RUN_FIRESTORE_TESTS_ENV) != "1":
+        pytest.skip(f"set {RUN_FIRESTORE_TESTS_ENV}=1 to run live Firestore sports checks")
+
     print("====== Testing Game Summary Processor ======\n")
     
     processor = GameSummaryProcessor()
@@ -155,4 +165,4 @@ def main():
     return 0
 
 if __name__ == "__main__":
-    exit(main()) 
+    exit(main())
