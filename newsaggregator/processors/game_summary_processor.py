@@ -3,8 +3,7 @@
 import os
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timezone, timedelta
-from google import genai
-from google.genai import types
+from newsaggregator.briefs import llm
 from newsaggregator.storage.sports_storage import SportsStorage
 
 
@@ -13,10 +12,7 @@ class GameSummaryProcessor:
     
     def __init__(self):
         """Initialize the Gemini client."""
-        self.client = genai.Client(
-            api_key=os.environ.get("GEMINI_API_KEY"),
-        )
-        self.model = os.environ.get("BRIEFSNAP_GAME_GEMINI_MODEL", "gemini-3-flash-preview")
+        self.model = os.environ.get("BRIEFSNAP_GAME_GEMINI_MODEL") or os.environ.get("BRIEFSNAP_MODEL") or "openai/gpt-5.6-luna"
         self.summary_index = {}
         
     def get_games_within_24_hours(self) -> List[Dict]:
@@ -141,34 +137,13 @@ Format your response as:
 • [Key point 2]
 • [Key point 3]"""
 
-            contents = [
-                types.Content(
-                    role="user",
-                    parts=[
-                        types.Part.from_text(text=prompt),
-                    ],
-                ),
-            ]
-            
-            tools = [
-                types.Tool(google_search=types.GoogleSearch()),
-            ]
-            
-            generate_content_config = types.GenerateContentConfig(
-                tools=tools,
-                response_mime_type="text/plain",
-                temperature=0.7,
-            )
-
-            # Generate content using streaming
-            response_text = ""
-            for chunk in self.client.models.generate_content_stream(
+            response_text, _citations = llm.complete(
+                [{"role": "user", "content": prompt}],
                 model=self.model,
-                contents=contents,
-                config=generate_content_config,
-            ):
-                if chunk.text:
-                    response_text += chunk.text
+                online=True,
+                max_tokens=4096,
+                temperature=0.6,
+            )
 
             if response_text.strip():
                 return {
@@ -228,34 +203,13 @@ Format your response as:
 • [Key highlight 2]
 • [Key highlight 3]"""
 
-            contents = [
-                types.Content(
-                    role="user",
-                    parts=[
-                        types.Part.from_text(text=prompt),
-                    ],
-                ),
-            ]
-            
-            tools = [
-                types.Tool(google_search=types.GoogleSearch()),
-            ]
-            
-            generate_content_config = types.GenerateContentConfig(
-                tools=tools,
-                response_mime_type="text/plain",
-                temperature=0.7,
-            )
-
-            # Generate content using streaming
-            response_text = ""
-            for chunk in self.client.models.generate_content_stream(
+            response_text, _citations = llm.complete(
+                [{"role": "user", "content": prompt}],
                 model=self.model,
-                contents=contents,
-                config=generate_content_config,
-            ):
-                if chunk.text:
-                    response_text += chunk.text
+                online=True,
+                max_tokens=4096,
+                temperature=0.6,
+            )
 
             if response_text.strip():
                 return {

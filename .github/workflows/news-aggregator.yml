@@ -49,6 +49,7 @@ jobs:
       - name: Run News Aggregator
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
           BRIEFSNAP_GEMINI_TIMEOUT_MS: "90000"
         run: python main.py

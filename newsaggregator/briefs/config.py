@@ -402,15 +402,15 @@ FETCH_WORKERS = _env_int("BRIEFSNAP_FETCH_WORKERS", 8)
 SCRAPE_WORKERS = _env_int("BRIEFSNAP_SCRAPE_WORKERS", 8)
 
 # --------------------------------------------------------------------------
-# Writing (Gemini)
+# Writing (OpenRouter)
 # --------------------------------------------------------------------------
 
-PRIMARY_MODEL = os.environ.get("BRIEFSNAP_GEMINI_MODEL") or "gemini-3-flash-preview"
-# NOTE: gemini-2.5-flash 404s for these keys ("no longer available to new
-# users"); gemini-3.5-flash is the newest stable flash that works here.
-FALLBACK_MODEL = os.environ.get("BRIEFSNAP_GEMINI_FALLBACK_MODEL") or "gemini-3.5-flash"
+# All AI requests go through OpenRouter (see llm.py). Web grounding for
+# widgets/local topics uses the ":online" variant of the same model.
+PRIMARY_MODEL = os.environ.get("BRIEFSNAP_MODEL") or "openai/gpt-5.6-luna"
+FALLBACK_MODEL = os.environ.get("BRIEFSNAP_FALLBACK_MODEL") or "openai/gpt-5.6-luna-pro"
 WIDGET_MODEL = os.environ.get("BRIEFSNAP_WIDGET_MODEL") or PRIMARY_MODEL
-GEMINI_TIMEOUT_MS = _env_int("BRIEFSNAP_GEMINI_TIMEOUT_MS", 90_000)
+LLM_TIMEOUT_MS = _env_int("BRIEFSNAP_LLM_TIMEOUT_MS", 120_000)
 
 # Copy limits enforced by the validation gate.
 HEADLINE_WORDS = (4, 14)

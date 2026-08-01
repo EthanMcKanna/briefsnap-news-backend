@@ -1,25 +1,23 @@
 """LLM writing layer.
 
-The stories are already chosen when this module runs. Gemini receives a
+The stories are already chosen when this module runs. The model receives a
 curated packet and only writes copy — headline, dek, summary, quick hits,
 section framing, and per-story summaries — under a strict JSON schema.
 Validation failures are fed back verbatim for one corrective rewrite before
 falling back to the next model. No post-hoc regex repair.
+
+All requests go through OpenRouter (llm.py); models are set in config.py.
 """
 
 from __future__ import annotations
 
 import json
-import os
-import time
 from typing import Any
 
-from google import genai
-
+from . import llm
 from .config import (
     BANNED_PHRASES,
     FALLBACK_MODEL,
-    GEMINI_TIMEOUT_MS,
     PRIMARY_MODEL,
     TOPIC_NAMES,
     WIDGET_MODEL,
@@ -79,32 +77,6 @@ CUSTOM_WIDGET_SCHEMA: dict[str, Any] = {
 
 class WriterError(RuntimeError):
     pass
-
-
-def _gemini_keys() -> list[str]:
-    return [
-        key
-        for key in (os.environ.get("GEMINI_API_KEY"), os.environ.get("GEMINI_API_KEY_2"))
-        if key
-    ]
-
-
-def _client(key: str) -> genai.Client:
-    return genai.Client(api_key=key, http_options={"timeout": GEMINI_TIMEOUT_MS})
-
-
-def _parse_json(text: str | None) -> dict[str, Any]:
-    if not text:
-        raise WriterError("empty model response")
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.strip("`")
-        if cleaned.startswith("json"):
-            cleaned = cleaned[4:]
-    start, end = cleaned.find("{"), cleaned.rfind("}")
-    if start == -1 or end == -1:
-        raise WriterError("no JSON object in model response")
-    return json.loads(cleaned[start : end + 1])
 
 
 def build_packet(clusters: list[Cluster]) -> list[dict[str, Any]]:
@@ -177,66 +149,44 @@ def write_brief(
 
     `validate` is a callable(payload, packet) -> list[str] of issues.
     Flow per model: draft -> validate -> one corrective rewrite with the
-    issues -> validate. Then the next model. Then raise.
+    issues -> validate. Then the fallback model. Then raise.
     """
     packet = build_packet(clusters)
-    keys = _gemini_keys()
-    if not keys:
-        raise WriterError("GEMINI_API_KEY is not configured")
-
     models = [model_override] if model_override else [PRIMARY_MODEL, FALLBACK_MODEL]
+    # Dedupe while preserving order (fallback may equal primary via env).
+    models = list(dict.fromkeys(model for model in models if model))
+
     last_error: Exception | None = None
     last_issues: list[str] = []
 
-    for key_index, key in enumerate(keys, start=1):
-        client = _client(key)
-        for model in models:
-            feedback: list[str] | None = None
-            for attempt in (1, 2):
-                label = f"{model} via key-{key_index} (attempt {attempt})"
-                try:
-                    print(f"Writing brief with {label}")
-                    config: dict[str, Any] = {
-                        "response_mime_type": "application/json",
-                        "response_json_schema": BRIEF_SCHEMA,
-                        # Thinking tokens share this budget on gemini-3 models,
-                        # so leave generous headroom for the ~20-story JSON.
-                        "max_output_tokens": 32768,
-                        "temperature": 0.3,
-                    }
-                    if model.startswith("gemini-3"):
-                        config["thinking_config"] = {"thinking_level": "low"}
-                    response = client.models.generate_content(
-                        model=model,
-                        contents=_brief_prompt(packet, feedback),
-                        config=config,
-                    )
-                    payload = _parse_json(response.text)
-                except Exception as exc:
-                    last_error = exc
-                    print(f"[WARN] {label} failed: {exc}")
-                    if _is_auth_error(exc):
-                        break  # try next key
-                    time.sleep(2)
-                    continue
-
-                issues = validate(payload, packet)
-                if not issues:
-                    return payload, model
-                last_issues = issues
-                print(f"[WARN] {label} failed review: {issues[:6]}")
-                feedback = issues
-            else:
+    for model in models:
+        feedback: list[str] | None = None
+        for attempt in (1, 2):
+            label = f"{model} (attempt {attempt})"
+            try:
+                print(f"Writing brief with {label}")
+                payload = llm.complete_json(
+                    [{"role": "user", "content": _brief_prompt(packet, feedback)}],
+                    model=model,
+                    schema=BRIEF_SCHEMA,
+                    schema_name="daily_brief",
+                    max_tokens=32768,
+                    temperature=0.3,
+                )
+            except Exception as exc:
+                last_error = exc
+                print(f"[WARN] {label} failed: {exc}")
                 continue
-            break  # auth error: skip remaining models on this key
+
+            issues = validate(payload, packet)
+            if not issues:
+                return payload, model
+            last_issues = issues
+            print(f"[WARN] {label} failed review: {issues[:6]}")
+            feedback = issues
 
     detail = f"; last issues: {last_issues[:6]}" if last_issues else f"; last error: {last_error}"
     raise WriterError(f"All models failed to produce a publishable brief{detail}")
-
-
-def _is_auth_error(exc: Exception) -> bool:
-    text = str(exc)
-    return "API_KEY_INVALID" in text or "PERMISSION_DENIED" in text or "API key not valid" in text
 
 
 # ---------------------------------------------------------------------------
@@ -249,12 +199,8 @@ def generate_custom_widget(
     requested_title: str,
     context_stories: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """One user widget. Search grounding is used here because widget topics
+    """One user widget. Web search is used here because widget topics
     routinely fall outside the curated packet."""
-    keys = _gemini_keys()
-    if not keys:
-        raise WriterError("GEMINI_API_KEY is not configured")
-
     widget_prompt = f"""Create one BriefSnap custom news widget for a user-defined topic.
 
 User request:
@@ -264,57 +210,48 @@ Today's brief context (for tone, not content):
 {json.dumps(context_stories, ensure_ascii=False)}
 
 Rules:
-- Use Google Search for current facts about the user's topic.
+- Use web search for current facts about the user's topic.
 - Return JSON with "title" (max 5 words), "summary" (one sentence, max 24 words), and "items" (3-5 bullets, max 12 words each).
 - Every item is a current, concrete fact. No filler, no markdown, no meta-commentary.
 - If the request is broad, pick the most newsworthy current angle.
 
 Preferred title, if useful: {requested_title or "none"}"""
 
-    configs = (
-        # Search-grounded first; if search quota is exhausted, degrade to a
-        # schema-only call rather than failing the widget outright.
-        (WIDGET_MODEL, {"tools": [{"google_search": {}}], "response_mime_type": "application/json",
-                        "response_json_schema": CUSTOM_WIDGET_SCHEMA, "max_output_tokens": 4096,
-                        "temperature": 0.25}),
-        (WIDGET_MODEL, {"response_mime_type": "application/json",
-                        "response_json_schema": CUSTOM_WIDGET_SCHEMA, "max_output_tokens": 4096,
-                        "temperature": 0.25}),
-        (FALLBACK_MODEL, {"response_mime_type": "application/json",
-                          "response_json_schema": CUSTOM_WIDGET_SCHEMA, "max_output_tokens": 4096,
-                          "temperature": 0.25}),
+    # Web-grounded first; degrade to an ungrounded call rather than failing.
+    attempts = (
+        (WIDGET_MODEL, True),
+        (WIDGET_MODEL, False),
+        (FALLBACK_MODEL, False),
     )
-
     last_error: Exception | None = None
-    for key in keys:
-        client = _client(key)
-        for model, config in configs:
-            try:
-                response = client.models.generate_content(
-                    model=model, contents=widget_prompt, config=config
-                )
-                payload = _parse_json(response.text)
-                title = " ".join(str(payload.get("title") or requested_title or prompt).split()[:5])
-                summary = str(payload.get("summary") or "").strip()
-                items = [
-                    " ".join(str(item).split()[:14]).rstrip(".")
-                    for item in (payload.get("items") or [])
-                    if str(item).strip()
-                ][:5]
-                if not summary and not items:
-                    raise WriterError("empty widget")
-                return {
-                    "topic": "CUSTOM",
-                    "title": title[:80],
-                    "summary": summary[:280],
-                    "items": items,
-                    "prompt": prompt,
-                    "model_used": model,
-                }
-            except Exception as exc:
-                last_error = exc
-                if _is_auth_error(exc):
-                    break
-                if "RESOURCE_EXHAUSTED" in str(exc) or "429" in str(exc):
-                    time.sleep(10)
+    for model, online in attempts:
+        try:
+            payload = llm.complete_json(
+                [{"role": "user", "content": widget_prompt}],
+                model=model,
+                schema=CUSTOM_WIDGET_SCHEMA,
+                schema_name="custom_widget",
+                online=online,
+                max_tokens=4096,
+                temperature=0.25,
+            )
+            title = " ".join(str(payload.get("title") or requested_title or prompt).split()[:5])
+            summary = str(payload.get("summary") or "").strip()
+            items = [
+                " ".join(str(item).split()[:14]).rstrip(".")
+                for item in (payload.get("items") or [])
+                if str(item).strip()
+            ][:5]
+            if not summary and not items:
+                raise WriterError("empty widget")
+            return {
+                "topic": "CUSTOM",
+                "title": title[:80],
+                "summary": summary[:280],
+                "items": items,
+                "prompt": prompt,
+                "model_used": f"{model}{':online' if online else ''}",
+            }
+        except Exception as exc:
+            last_error = exc
     raise WriterError(f"Custom widget generation failed: {last_error}")
