@@ -12,7 +12,19 @@ All requests go through OpenRouter (llm.py); models are set in config.py.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
+
+
+def strip_inline_citations(text: str) -> str:
+    """Remove web-plugin citation markup the model embeds in :online output.
+
+    "fact. ([apnews.com](https://apnews.com/...))" -> "fact."
+    "[label](url)" -> "label"
+    """
+    text = re.sub(r"\s*\(\[[^\]]*\]\([^)]*\)\)", "", text)
+    text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)
+    return re.sub(r"\s{2,}", " ", text).strip()
 
 from . import llm
 from .config import (
@@ -235,12 +247,14 @@ Preferred title, if useful: {requested_title or "none"}"""
                 max_tokens=4096,
                 temperature=0.25,
             )
-            title = " ".join(str(payload.get("title") or requested_title or prompt).split()[:5])
-            summary = str(payload.get("summary") or "").strip()
+            title = " ".join(
+                strip_inline_citations(str(payload.get("title") or requested_title or prompt)).split()[:5]
+            )
+            summary = strip_inline_citations(str(payload.get("summary") or ""))
             items = [
-                " ".join(str(item).split()[:14]).rstrip(".")
+                " ".join(strip_inline_citations(str(item)).split()[:14]).rstrip(".")
                 for item in (payload.get("items") or [])
-                if str(item).strip()
+                if strip_inline_citations(str(item))
             ][:5]
             if not summary and not items:
                 raise WriterError("empty widget")
