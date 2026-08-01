@@ -63,6 +63,15 @@ def test_question_explainers_are_junk():
     assert is_junk(explainer) == "explainer"
 
 
+def test_affiliate_deals_content_is_junk():
+    coupon = _candidate("Paramount+ coupon codes and August deals",
+                        url="https://wired.com/story/paramount-plus-coupon-codes/")
+    sale = _candidate("The best early Labor Day sales on laptops this weekend",
+                      url="https://example.com/story/labor-day-sale-laptops")
+    assert is_junk(coupon) is not None
+    assert is_junk(sale) is not None
+
+
 def test_stale_candidates_are_junk():
     stale = _candidate("A perfectly newsworthy title about important things", hours_old=50)
     assert is_junk(stale) == "stale"
